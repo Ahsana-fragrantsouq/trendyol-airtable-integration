@@ -49,7 +49,9 @@ def airtable_search(table_id, formula):
         r = requests.get(url, headers=AIRTABLE_HEADERS, params=params)
         r.raise_for_status()
 
-        return r.json().get("records", [])
+        records = r.json().get("records", [])
+        print(f"📄 Records found: {len(records)}")
+        return records
 
     except Exception as e:
         print("❌ Airtable search error:", e)
@@ -74,12 +76,13 @@ def airtable_create(table_id, fields):
 # ---------------- CUSTOMER ----------------
 def get_or_create_customer(customer):
     customer_id = customer["customerId"]
-    formula = f"{{Trendyol Id}}='{customer_id}'"
+    print(f"👤 Processing customer | Trendyol ID: {customer_id}")
 
+    formula = f"{{Trendyol Id}}='{customer_id}'"
     records = airtable_search(CUSTOMERS_TABLE_ID, formula)
 
     if records:
-        print("✅ Customer exists")
+        print("✅ Customer already exists")
         return records[0]["id"]
 
     print("🆕 Creating new customer")
@@ -94,17 +97,22 @@ def get_or_create_customer(customer):
         }
     )
 
-    return record["id"] if record else None
+    if record:
+        print("✅ Customer created:", record["id"])
+        return record["id"]
+
+    return None
 
 # ---------------- ORDER ----------------
 def order_exists(order_id):
+    print(f"🧾 Checking order existence | {order_id}")
     formula = f"{{Order ID}}='{order_id}'"
     records = airtable_search(ORDERS_TABLE_ID, formula)
     return len(records) > 0
 
 
 def create_order(order, customer_record_id):
-    print(f"🆕 Creating order {order['orderId']}")
+    print(f"🆕 Creating order | {order['orderId']}")
 
     airtable_create(
         ORDERS_TABLE_ID,
@@ -120,6 +128,8 @@ def create_order(order, customer_record_id):
         }
     )
 
+    print("✅ Order created")
+
 # ---------------- MANUAL TEST ENDPOINT ----------------
 @app.route("/trendyol/order", methods=["POST"])
 def receive_trendyol_order():
@@ -128,6 +138,7 @@ def receive_trendyol_order():
         print("📨 Incoming manual payload:", data)
 
         if order_exists(data["orderId"]):
+            print("⏭️ Duplicate order, skipping")
             return jsonify({"status": "skipped"}), 200
 
         customer_id = get_or_create_customer(data["customer"])
@@ -139,7 +150,7 @@ def receive_trendyol_order():
         print("❌ Processing error:", e)
         return jsonify({"error": "internal error"}), 500
 
-# ---------------- TRENDYOL SYNC (REAL API) ----------------
+# ---------------- TRENDYOL SYNC (DATE FILTERED) ----------------
 @app.route("/trendyol/sync", methods=["GET"])
 def sync_trendyol_orders():
     if not TRENDYOL_API_KEY:
@@ -147,19 +158,38 @@ def sync_trendyol_orders():
 
     try:
         url = f"{TRENDYOL_BASE_URL}/integration/order/sellers/{TRENDYOL_SELLER_ID}/shipment-packages"
-        params = {"page": 0, "size": 10}
 
-        print("📡 Fetching orders from Trendyol")
+        # 📅 Orders created on 01/02/2026
+        start_date = 1769904000000  # 01-02-2026 00:00:00
+        end_date = 1769990399000    # 01-02-2026 23:59:59
+
+        params = {
+            "page": 0,
+            "size": 50,
+            "startDate": start_date,
+            "endDate": end_date
+        }
+
+        print("📡 Fetching Trendyol orders")
+        print("📅 Date filter: 01/02/2026")
+        print("⏱️ startDate:", start_date)
+        print("⏱️ endDate:", end_date)
+
         r = requests.get(url, headers=TRENDYOL_HEADERS, params=params)
+        print("➡️ Trendyol response status:", r.status_code)
         r.raise_for_status()
 
         packages = r.json().get("content", [])
+        print(f"📦 Total packages received: {len(packages)}")
 
         processed = 0
+
         for pkg in packages:
             order_id = str(pkg["orderNumber"])
+            print("🧾 Processing order:", order_id)
 
             if order_exists(order_id):
+                print("⏭️ Order already exists, skipping")
                 continue
 
             customer = {
@@ -179,7 +209,9 @@ def sync_trendyol_orders():
 
             create_order(order, customer_record_id)
             processed += 1
+            print("✅ Order synced:", order_id)
 
+        print("🎉 Sync completed | Total new orders:", processed)
         return jsonify({"synced": processed}), 200
 
     except Exception as e:

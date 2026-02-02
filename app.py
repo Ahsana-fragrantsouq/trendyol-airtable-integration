@@ -1,4 +1,5 @@
 import os
+import time
 import requests
 from flask import Flask, request, jsonify
 
@@ -34,7 +35,6 @@ TRENDYOL_HEADERS = {
 AIRTABLE_URL = "https://api.airtable.com/v0"
 TRENDYOL_BASE_URL = "https://apigw.trendyol.com/ae"
 
-
 # ---------------- HEALTH CHECK ----------------
 @app.route("/health", methods=["GET"])
 def health():
@@ -44,14 +44,9 @@ def health():
 def airtable_search(table_id, formula):
     try:
         url = f"{AIRTABLE_URL}/{BASE_ID}/{table_id}"
-        params = {"filterByFormula": formula}
-
-        print(f"🔍 Airtable search | {formula}")
-        r = requests.get(url, headers=AIRTABLE_HEADERS, params=params)
+        r = requests.get(url, headers=AIRTABLE_HEADERS, params={"filterByFormula": formula})
         r.raise_for_status()
-
         return r.json().get("records", [])
-
     except Exception as e:
         print("❌ Airtable search error:", e)
         return []
@@ -60,35 +55,27 @@ def airtable_search(table_id, formula):
 def airtable_create(table_id, fields):
     try:
         url = f"{AIRTABLE_URL}/{BASE_ID}/{table_id}"
-        payload = {"fields": fields}
-
-        print(f"➕ Airtable create | {fields}")
-        r = requests.post(url, headers=AIRTABLE_HEADERS, json=payload)
+        r = requests.post(url, headers=AIRTABLE_HEADERS, json={"fields": fields})
         r.raise_for_status()
-
         return r.json()
-
     except Exception as e:
         print("❌ Airtable create error:", e)
         return None
 
 # ---------------- CUSTOMER ----------------
 def get_or_create_customer(customer):
-    customer_id = customer["customerId"]
-    formula = f"{{Trendyol Id}}='{customer_id}'"
-
-    records = airtable_search(CUSTOMERS_TABLE_ID, formula)
+    records = airtable_search(
+        CUSTOMERS_TABLE_ID,
+        f"{{Trendyol Id}}='{customer['customerId']}'"
+    )
 
     if records:
-        print("✅ Customer exists")
         return records[0]["id"]
-
-    print("🆕 Creating new customer")
 
     record = airtable_create(
         CUSTOMERS_TABLE_ID,
         {
-            "Trendyol Id": customer_id,
+            "Trendyol Id": customer["customerId"],
             "Name": customer["name"],
             "Address": customer["address"],
             "Acquired sales channel": "Trendyol"
@@ -99,14 +86,10 @@ def get_or_create_customer(customer):
 
 # ---------------- ORDER ----------------
 def order_exists(order_id):
-    formula = f"{{Order ID}}='{order_id}'"
-    records = airtable_search(ORDERS_TABLE_ID, formula)
-    return len(records) > 0
+    return len(airtable_search(ORDERS_TABLE_ID, f"{{Order ID}}='{order_id}'")) > 0
 
 
 def create_order(order, customer_record_id):
-    print(f"🆕 Creating order {order['orderId']}")
-
     airtable_create(
         ORDERS_TABLE_ID,
         {
@@ -126,7 +109,6 @@ def create_order(order, customer_record_id):
 def receive_trendyol_order():
     try:
         data = request.json
-        print("📨 Incoming manual payload:", data)
 
         if order_exists(data["orderId"]):
             return jsonify({"status": "skipped"}), 200
@@ -140,7 +122,7 @@ def receive_trendyol_order():
         print("❌ Processing error:", e)
         return jsonify({"error": "internal error"}), 500
 
-# ---------------- TRENDYOL SYNC (RECENT SHIPMENTS) ----------------
+# ---------------- TRENDYOL SYNC (RECENT SHIPMENTS – STABLE) ----------------
 @app.route("/trendyol/sync", methods=["GET"])
 def sync_trendyol_orders():
     if not TRENDYOL_API_KEY:
@@ -152,31 +134,41 @@ def sync_trendyol_orders():
         url = f"{TRENDYOL_BASE_URL}/integration/order/sellers/{TRENDYOL_SELLER_ID}/shipment-packages"
 
         processed = 0
-        MAX_PAGES = 3   # 🔁 fetch recent pages only (safe limit)
-        PAGE_SIZE = 20
+        MAX_PAGES = 3
+        PAGE_SIZE = 10  # 🔑 AE-safe size
 
         for page in range(MAX_PAGES):
-            params = {
-                "page": page,
-                "size": PAGE_SIZE
-            }
-
+            params = {"page": page, "size": PAGE_SIZE}
             print(f"📄 Fetching page {page}")
-            r = requests.get(url, headers=TRENDYOL_HEADERS, params=params)
-            r.raise_for_status()
+
+            for attempt in range(2):  # 🔁 retry once
+                try:
+                    r = requests.get(
+                        url,
+                        headers=TRENDYOL_HEADERS,
+                        params=params,
+                        timeout=20
+                    )
+                    print("➡️ Status:", r.status_code)
+                    r.raise_for_status()
+                    break
+                except Exception as e:
+                    print(f"⚠️ Attempt {attempt+1} failed:", e)
+                    if attempt == 0:
+                        time.sleep(3)
+                    else:
+                        raise
 
             packages = r.json().get("content", [])
             print(f"📦 Packages on page {page}: {len(packages)}")
 
             if not packages:
-                print("⏹ No more packages, stopping")
                 break
 
             for pkg in packages:
                 order_id = str(pkg["orderNumber"])
 
                 if order_exists(order_id):
-                    print("⏭️ Order exists, skipping:", order_id)
                     continue
 
                 customer = {

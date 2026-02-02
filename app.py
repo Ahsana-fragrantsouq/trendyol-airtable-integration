@@ -32,7 +32,8 @@ TRENDYOL_HEADERS = {
 }
 
 AIRTABLE_URL = "https://api.airtable.com/v0"
-TRENDYOL_BASE_URL = "https://apigw.trendyol.com"
+TRENDYOL_BASE_URL = "https://apigw.trendyol.com/ae"
+
 
 # ---------------- HEALTH CHECK ----------------
 @app.route("/health", methods=["GET"])

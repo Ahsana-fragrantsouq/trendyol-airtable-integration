@@ -1,5 +1,4 @@
 import os
-import time
 import requests
 from flask import Flask, request, jsonify
 
@@ -33,7 +32,7 @@ TRENDYOL_HEADERS = {
 }
 
 AIRTABLE_URL = "https://api.airtable.com/v0"
-TRENDYOL_BASE_URL = "https://apigw.trendyol.com/ae"
+TRENDYOL_BASE_URL = "https://apigw.trendyol.com"
 
 # ---------------- HEALTH CHECK ----------------
 @app.route("/health", methods=["GET"])
@@ -44,9 +43,14 @@ def health():
 def airtable_search(table_id, formula):
     try:
         url = f"{AIRTABLE_URL}/{BASE_ID}/{table_id}"
-        r = requests.get(url, headers=AIRTABLE_HEADERS, params={"filterByFormula": formula})
+        params = {"filterByFormula": formula}
+
+        print(f"🔍 Airtable search | {formula}")
+        r = requests.get(url, headers=AIRTABLE_HEADERS, params=params)
         r.raise_for_status()
+
         return r.json().get("records", [])
+
     except Exception as e:
         print("❌ Airtable search error:", e)
         return []
@@ -55,27 +59,35 @@ def airtable_search(table_id, formula):
 def airtable_create(table_id, fields):
     try:
         url = f"{AIRTABLE_URL}/{BASE_ID}/{table_id}"
-        r = requests.post(url, headers=AIRTABLE_HEADERS, json={"fields": fields})
+        payload = {"fields": fields}
+
+        print(f"➕ Airtable create | {fields}")
+        r = requests.post(url, headers=AIRTABLE_HEADERS, json=payload)
         r.raise_for_status()
+
         return r.json()
+
     except Exception as e:
         print("❌ Airtable create error:", e)
         return None
 
 # ---------------- CUSTOMER ----------------
 def get_or_create_customer(customer):
-    records = airtable_search(
-        CUSTOMERS_TABLE_ID,
-        f"{{Trendyol Id}}='{customer['customerId']}'"
-    )
+    customer_id = customer["customerId"]
+    formula = f"{{Trendyol Id}}='{customer_id}'"
+
+    records = airtable_search(CUSTOMERS_TABLE_ID, formula)
 
     if records:
+        print("✅ Customer exists")
         return records[0]["id"]
+
+    print("🆕 Creating new customer")
 
     record = airtable_create(
         CUSTOMERS_TABLE_ID,
         {
-            "Trendyol Id": customer["customerId"],
+            "Trendyol Id": customer_id,
             "Name": customer["name"],
             "Address": customer["address"],
             "Acquired sales channel": "Trendyol"
@@ -86,10 +98,14 @@ def get_or_create_customer(customer):
 
 # ---------------- ORDER ----------------
 def order_exists(order_id):
-    return len(airtable_search(ORDERS_TABLE_ID, f"{{Order ID}}='{order_id}'")) > 0
+    formula = f"{{Order ID}}='{order_id}'"
+    records = airtable_search(ORDERS_TABLE_ID, formula)
+    return len(records) > 0
 
 
 def create_order(order, customer_record_id):
+    print(f"🆕 Creating order {order['orderId']}")
+
     airtable_create(
         ORDERS_TABLE_ID,
         {
@@ -109,6 +125,7 @@ def create_order(order, customer_record_id):
 def receive_trendyol_order():
     try:
         data = request.json
+        print("📨 Incoming manual payload:", data)
 
         if order_exists(data["orderId"]):
             return jsonify({"status": "skipped"}), 200
@@ -122,75 +139,47 @@ def receive_trendyol_order():
         print("❌ Processing error:", e)
         return jsonify({"error": "internal error"}), 500
 
-# ---------------- TRENDYOL SYNC (RECENT SHIPMENTS – STABLE) ----------------
+# ---------------- TRENDYOL SYNC (REAL API) ----------------
 @app.route("/trendyol/sync", methods=["GET"])
 def sync_trendyol_orders():
     if not TRENDYOL_API_KEY:
         return jsonify({"error": "Trendyol API not configured"}), 400
 
     try:
-        print("📡 Fetching recent Trendyol shipment-packages")
-
         url = f"{TRENDYOL_BASE_URL}/integration/order/sellers/{TRENDYOL_SELLER_ID}/shipment-packages"
+        params = {"page": 0, "size": 10}
+
+        print("📡 Fetching orders from Trendyol")
+        r = requests.get(url, headers=TRENDYOL_HEADERS, params=params)
+        r.raise_for_status()
+
+        packages = r.json().get("content", [])
 
         processed = 0
-        MAX_PAGES = 3
-        PAGE_SIZE = 10  # 🔑 AE-safe size
+        for pkg in packages:
+            order_id = str(pkg["orderNumber"])
 
-        for page in range(MAX_PAGES):
-            params = {"page": page, "size": PAGE_SIZE}
-            print(f"📄 Fetching page {page}")
+            if order_exists(order_id):
+                continue
 
-            for attempt in range(2):  # 🔁 retry once
-                try:
-                    r = requests.get(
-                        url,
-                        headers=TRENDYOL_HEADERS,
-                        params=params,
-                        timeout=20
-                    )
-                    print("➡️ Status:", r.status_code)
-                    r.raise_for_status()
-                    break
-                except Exception as e:
-                    print(f"⚠️ Attempt {attempt+1} failed:", e)
-                    if attempt == 0:
-                        time.sleep(3)
-                    else:
-                        raise
+            customer = {
+                "customerId": str(pkg["customerId"]),
+                "name": f"{pkg.get('customerFirstName','')} {pkg.get('customerLastName','')}",
+                "address": pkg.get("shipmentAddress", {}).get("fullAddress", "")
+            }
 
-            packages = r.json().get("content", [])
-            print(f"📦 Packages on page {page}: {len(packages)}")
+            customer_record_id = get_or_create_customer(customer)
 
-            if not packages:
-                break
+            order = {
+                "orderId": order_id,
+                "orderDate": pkg.get("orderDate"),
+                "sku": pkg["lines"][0]["merchantSku"],
+                "productName": pkg["lines"][0]["productName"]
+            }
 
-            for pkg in packages:
-                order_id = str(pkg["orderNumber"])
+            create_order(order, customer_record_id)
+            processed += 1
 
-                if order_exists(order_id):
-                    continue
-
-                customer = {
-                    "customerId": str(pkg["customerId"]),
-                    "name": f"{pkg.get('customerFirstName','')} {pkg.get('customerLastName','')}",
-                    "address": pkg.get("shipmentAddress", {}).get("fullAddress", "")
-                }
-
-                customer_record_id = get_or_create_customer(customer)
-
-                order = {
-                    "orderId": order_id,
-                    "orderDate": pkg.get("orderDate"),
-                    "sku": pkg["lines"][0]["merchantSku"],
-                    "productName": pkg["lines"][0]["productName"]
-                }
-
-                create_order(order, customer_record_id)
-                processed += 1
-                print("✅ Synced order:", order_id)
-
-        print("🎉 Recent shipment sync completed | New orders:", processed)
         return jsonify({"synced": processed}), 200
 
     except Exception as e:

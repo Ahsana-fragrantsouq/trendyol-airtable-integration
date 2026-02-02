@@ -139,47 +139,65 @@ def receive_trendyol_order():
         print("❌ Processing error:", e)
         return jsonify({"error": "internal error"}), 500
 
-# ---------------- TRENDYOL SYNC (REAL API) ----------------
+# ---------------- TRENDYOL SYNC (RECENT SHIPMENTS) ----------------
 @app.route("/trendyol/sync", methods=["GET"])
 def sync_trendyol_orders():
     if not TRENDYOL_API_KEY:
         return jsonify({"error": "Trendyol API not configured"}), 400
 
     try:
+        print("📡 Fetching recent Trendyol shipment-packages")
+
         url = f"{TRENDYOL_BASE_URL}/integration/order/sellers/{TRENDYOL_SELLER_ID}/shipment-packages"
-        params = {"page": 0, "size": 10}
-
-        print("📡 Fetching orders from Trendyol")
-        r = requests.get(url, headers=TRENDYOL_HEADERS, params=params)
-        r.raise_for_status()
-
-        packages = r.json().get("content", [])
 
         processed = 0
-        for pkg in packages:
-            order_id = str(pkg["orderNumber"])
+        MAX_PAGES = 3   # 🔁 fetch recent pages only (safe limit)
+        PAGE_SIZE = 20
 
-            if order_exists(order_id):
-                continue
-
-            customer = {
-                "customerId": str(pkg["customerId"]),
-                "name": f"{pkg.get('customerFirstName','')} {pkg.get('customerLastName','')}",
-                "address": pkg.get("shipmentAddress", {}).get("fullAddress", "")
+        for page in range(MAX_PAGES):
+            params = {
+                "page": page,
+                "size": PAGE_SIZE
             }
 
-            customer_record_id = get_or_create_customer(customer)
+            print(f"📄 Fetching page {page}")
+            r = requests.get(url, headers=TRENDYOL_HEADERS, params=params)
+            r.raise_for_status()
 
-            order = {
-                "orderId": order_id,
-                "orderDate": pkg.get("orderDate"),
-                "sku": pkg["lines"][0]["merchantSku"],
-                "productName": pkg["lines"][0]["productName"]
-            }
+            packages = r.json().get("content", [])
+            print(f"📦 Packages on page {page}: {len(packages)}")
 
-            create_order(order, customer_record_id)
-            processed += 1
+            if not packages:
+                print("⏹ No more packages, stopping")
+                break
 
+            for pkg in packages:
+                order_id = str(pkg["orderNumber"])
+
+                if order_exists(order_id):
+                    print("⏭️ Order exists, skipping:", order_id)
+                    continue
+
+                customer = {
+                    "customerId": str(pkg["customerId"]),
+                    "name": f"{pkg.get('customerFirstName','')} {pkg.get('customerLastName','')}",
+                    "address": pkg.get("shipmentAddress", {}).get("fullAddress", "")
+                }
+
+                customer_record_id = get_or_create_customer(customer)
+
+                order = {
+                    "orderId": order_id,
+                    "orderDate": pkg.get("orderDate"),
+                    "sku": pkg["lines"][0]["merchantSku"],
+                    "productName": pkg["lines"][0]["productName"]
+                }
+
+                create_order(order, customer_record_id)
+                processed += 1
+                print("✅ Synced order:", order_id)
+
+        print("🎉 Recent shipment sync completed | New orders:", processed)
         return jsonify({"synced": processed}), 200
 
     except Exception as e:

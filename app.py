@@ -18,6 +18,7 @@ print("🔧 CONFIG LOADED")
 print("BASE_ID:", BASE_ID)
 print("CUSTOMERS_TABLE_ID:", CUSTOMERS_TABLE_ID)
 print("ORDERS_TABLE_ID:", ORDERS_TABLE_ID)
+print("TRENDYOL_SELLER_ID:", TRENDYOL_SELLER_ID)
 
 AIRTABLE_HEADERS = {
     "Authorization": f"Bearer {AIRTABLE_TOKEN}",
@@ -32,7 +33,9 @@ TRENDYOL_HEADERS = {
 }
 
 AIRTABLE_URL = "https://api.airtable.com/v0"
-TRENDYOL_BASE_URL = "https://apigw.trendyol.com"
+
+# ✅ FIX 1: AE REGION BASE URL
+TRENDYOL_BASE_URL = "https://apigw.trendyol.com/ae"
 
 # ---------------- HEALTH CHECK ----------------
 @app.route("/health", methods=["GET"])
@@ -163,20 +166,22 @@ def sync_trendyol_orders():
         start_date = 1769904000000  # 01-02-2026 00:00:00
         end_date = 1769990399000    # 01-02-2026 23:59:59
 
+        # ✅ FIX 2: Correct parameter names
         params = {
             "page": 0,
             "size": 50,
-            "startDate": start_date,
-            "endDate": end_date
+            "orderDateStart": start_date,
+            "orderDateEnd": end_date
         }
 
         print("📡 Fetching Trendyol orders")
         print("📅 Date filter: 01/02/2026")
-        print("⏱️ startDate:", start_date)
-        print("⏱️ endDate:", end_date)
+        print("⏱️ orderDateStart:", start_date)
+        print("⏱️ orderDateEnd:", end_date)
 
         r = requests.get(url, headers=TRENDYOL_HEADERS, params=params)
         print("➡️ Trendyol response status:", r.status_code)
+        print("📨 Trendyol raw response:", r.text)
         r.raise_for_status()
 
         packages = r.json().get("content", [])

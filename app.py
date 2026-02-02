@@ -2,7 +2,6 @@ import os
 import requests
 from flask import Flask, request, jsonify
 
-
 app = Flask(__name__)
 
 # ---------------- CONFIG ----------------
@@ -11,93 +10,101 @@ BASE_ID = os.getenv("AIRTABLE_BASE_ID")
 CUSTOMERS_TABLE_ID = os.getenv("CUSTOMERS_TABLE_ID")
 ORDERS_TABLE_ID = os.getenv("ORDERS_TABLE_ID")
 
+TRENDYOL_SELLER_ID = os.getenv("TRENDYOL_SELLER_ID")
+TRENDYOL_API_KEY = os.getenv("TRENDYOL_API_KEY")
+TRENDYOL_API_SECRET = os.getenv("TRENDYOL_API_SECRET")
+
 print("🔧 CONFIG LOADED")
 print("BASE_ID:", BASE_ID)
 print("CUSTOMERS_TABLE_ID:", CUSTOMERS_TABLE_ID)
 print("ORDERS_TABLE_ID:", ORDERS_TABLE_ID)
 
-HEADERS = {
+AIRTABLE_HEADERS = {
     "Authorization": f"Bearer {AIRTABLE_TOKEN}",
     "Content-Type": "application/json"
 }
 
+TRENDYOL_HEADERS = {
+    "User-Agent": "TrendyolAirtableSync/1.0",
+    "ApiKey": TRENDYOL_API_KEY,
+    "Secret": TRENDYOL_API_SECRET,
+    "Content-Type": "application/json"
+}
+
 AIRTABLE_URL = "https://api.airtable.com/v0"
+TRENDYOL_BASE_URL = "https://apigw.trendyol.com"
 
-# ---------------- HELPERS ----------------
+# ---------------- HEALTH CHECK ----------------
+@app.route("/health", methods=["GET"])
+def health():
+    return jsonify({"status": "ok"}), 200
 
+# ---------------- AIRTABLE HELPERS ----------------
 def airtable_search(table_id, formula):
-    url = f"{AIRTABLE_URL}/{BASE_ID}/{table_id}"
-    params = {"filterByFormula": formula}
+    try:
+        url = f"{AIRTABLE_URL}/{BASE_ID}/{table_id}"
+        params = {"filterByFormula": formula}
 
-    print(f"🔍 Searching Airtable | Table: {table_id} | Formula: {formula}")
+        print(f"🔍 Airtable search | {formula}")
+        r = requests.get(url, headers=AIRTABLE_HEADERS, params=params)
+        r.raise_for_status()
 
-    r = requests.get(url, headers=HEADERS, params=params)
-    print("➡️ Airtable search status:", r.status_code)
+        return r.json().get("records", [])
 
-    r.raise_for_status()
-    records = r.json().get("records", [])
-    print(f"📄 Records found: {len(records)}")
-
-    return records
+    except Exception as e:
+        print("❌ Airtable search error:", e)
+        return []
 
 
 def airtable_create(table_id, fields):
-    url = f"{AIRTABLE_URL}/{BASE_ID}/{table_id}"
-    payload = {"fields": fields}
+    try:
+        url = f"{AIRTABLE_URL}/{BASE_ID}/{table_id}"
+        payload = {"fields": fields}
 
-    print(f"➕ Creating record in table {table_id}")
-    print("📦 Payload:", fields)
+        print(f"➕ Airtable create | {fields}")
+        r = requests.post(url, headers=AIRTABLE_HEADERS, json=payload)
+        r.raise_for_status()
 
-    r = requests.post(url, headers=HEADERS, json=payload)
-    print("➡️ Airtable create status:", r.status_code)
+        return r.json()
 
-    r.raise_for_status()
-    return r.json()
+    except Exception as e:
+        print("❌ Airtable create error:", e)
+        return None
 
 # ---------------- CUSTOMER ----------------
-
 def get_or_create_customer(customer):
-    trendyol_customer_id = customer["customerId"]
-    print(f"👤 Processing customer | Trendyol ID: {trendyol_customer_id}")
+    customer_id = customer["customerId"]
+    formula = f"{{Trendyol Id}}='{customer_id}'"
 
-    formula = f"{{Trendyol Id}}='{trendyol_customer_id}'"
     records = airtable_search(CUSTOMERS_TABLE_ID, formula)
 
     if records:
-        print("✅ Customer already exists")
+        print("✅ Customer exists")
         return records[0]["id"]
 
-    print("🆕 Customer not found, creating new one")
+    print("🆕 Creating new customer")
 
-    new_customer = airtable_create(
+    record = airtable_create(
         CUSTOMERS_TABLE_ID,
         {
-            "Trendyol Id": trendyol_customer_id,
+            "Trendyol Id": customer_id,
             "Name": customer["name"],
             "Address": customer["address"],
             "Acquired sales channel": "Trendyol"
         }
     )
 
-    print("✅ Customer created | Airtable ID:", new_customer["id"])
-    return new_customer["id"]
+    return record["id"] if record else None
 
 # ---------------- ORDER ----------------
-
 def order_exists(order_id):
-    print(f"🧾 Checking if order exists | Order ID: {order_id}")
-
     formula = f"{{Order ID}}='{order_id}'"
     records = airtable_search(ORDERS_TABLE_ID, formula)
-
-    exists = len(records) > 0
-    print("📦 Order exists:", exists)
-
-    return exists
+    return len(records) > 0
 
 
 def create_order(order, customer_record_id):
-    print(f"🆕 Creating order | Order ID: {order['orderId']}")
+    print(f"🆕 Creating order {order['orderId']}")
 
     airtable_create(
         ORDERS_TABLE_ID,
@@ -113,35 +120,73 @@ def create_order(order, customer_record_id):
         }
     )
 
-    print("✅ Order created successfully")
-
-# ---------------- API ENDPOINT ----------------
-
+# ---------------- MANUAL TEST ENDPOINT ----------------
 @app.route("/trendyol/order", methods=["POST"])
 def receive_trendyol_order():
-    print("\n🚀 New Trendyol order request received")
+    try:
+        data = request.json
+        print("📨 Incoming manual payload:", data)
 
-    data = request.json
-    print("📨 Incoming payload:", data)
+        if order_exists(data["orderId"]):
+            return jsonify({"status": "skipped"}), 200
 
-    order_id = data["orderId"]
+        customer_id = get_or_create_customer(data["customer"])
+        create_order(data, customer_id)
 
-    # 1. check duplicate order
-    if order_exists(order_id):
-        print("⏭️ Skipping duplicate order")
-        return jsonify({"status": "skipped", "reason": "order already exists"}), 200
+        return jsonify({"status": "success"}), 201
 
-    # 2. customer
-    customer_record_id = get_or_create_customer(data["customer"])
+    except Exception as e:
+        print("❌ Processing error:", e)
+        return jsonify({"error": "internal error"}), 500
 
-    # 3. create order
-    create_order(data, customer_record_id)
+# ---------------- TRENDYOL SYNC (REAL API) ----------------
+@app.route("/trendyol/sync", methods=["GET"])
+def sync_trendyol_orders():
+    if not TRENDYOL_API_KEY:
+        return jsonify({"error": "Trendyol API not configured"}), 400
 
-    print("🎉 Order processing completed\n")
-    return jsonify({"status": "success", "orderId": order_id}), 201
+    try:
+        url = f"{TRENDYOL_BASE_URL}/integration/order/sellers/{TRENDYOL_SELLER_ID}/shipment-packages"
+        params = {"page": 0, "size": 10}
+
+        print("📡 Fetching orders from Trendyol")
+        r = requests.get(url, headers=TRENDYOL_HEADERS, params=params)
+        r.raise_for_status()
+
+        packages = r.json().get("content", [])
+
+        processed = 0
+        for pkg in packages:
+            order_id = str(pkg["orderNumber"])
+
+            if order_exists(order_id):
+                continue
+
+            customer = {
+                "customerId": str(pkg["customerId"]),
+                "name": f"{pkg.get('customerFirstName','')} {pkg.get('customerLastName','')}",
+                "address": pkg.get("shipmentAddress", {}).get("fullAddress", "")
+            }
+
+            customer_record_id = get_or_create_customer(customer)
+
+            order = {
+                "orderId": order_id,
+                "orderDate": pkg.get("orderDate"),
+                "sku": pkg["lines"][0]["merchantSku"],
+                "productName": pkg["lines"][0]["productName"]
+            }
+
+            create_order(order, customer_record_id)
+            processed += 1
+
+        return jsonify({"synced": processed}), 200
+
+    except Exception as e:
+        print("❌ Trendyol sync error:", e)
+        return jsonify({"error": "sync failed"}), 500
 
 # ---------------- RUN ----------------
-
 if __name__ == "__main__":
-    print("🔥 Flask server starting...")
-    app.run(debug=True)
+    print("🔥 Flask server running")
+    app.run(host="0.0.0.0", port=5000)

@@ -34,7 +34,7 @@ TRENDYOL_HEADERS = {
 
 AIRTABLE_URL = "https://api.airtable.com/v0"
 
-# ✅ FIX 1: AE REGION BASE URL
+# ✅ AE REGION
 TRENDYOL_BASE_URL = "https://apigw.trendyol.com/ae"
 
 # ---------------- HEALTH CHECK ----------------
@@ -46,16 +46,9 @@ def health():
 def airtable_search(table_id, formula):
     try:
         url = f"{AIRTABLE_URL}/{BASE_ID}/{table_id}"
-        params = {"filterByFormula": formula}
-
-        print(f"🔍 Airtable search | {formula}")
-        r = requests.get(url, headers=AIRTABLE_HEADERS, params=params)
+        r = requests.get(url, headers=AIRTABLE_HEADERS, params={"filterByFormula": formula})
         r.raise_for_status()
-
-        records = r.json().get("records", [])
-        print(f"📄 Records found: {len(records)}")
-        return records
-
+        return r.json().get("records", [])
     except Exception as e:
         print("❌ Airtable search error:", e)
         return []
@@ -64,59 +57,40 @@ def airtable_search(table_id, formula):
 def airtable_create(table_id, fields):
     try:
         url = f"{AIRTABLE_URL}/{BASE_ID}/{table_id}"
-        payload = {"fields": fields}
-
-        print(f"➕ Airtable create | {fields}")
-        r = requests.post(url, headers=AIRTABLE_HEADERS, json=payload)
+        r = requests.post(url, headers=AIRTABLE_HEADERS, json={"fields": fields})
         r.raise_for_status()
-
         return r.json()
-
     except Exception as e:
         print("❌ Airtable create error:", e)
         return None
 
 # ---------------- CUSTOMER ----------------
 def get_or_create_customer(customer):
-    customer_id = customer["customerId"]
-    print(f"👤 Processing customer | Trendyol ID: {customer_id}")
-
-    formula = f"{{Trendyol Id}}='{customer_id}'"
+    formula = f"{{Trendyol Id}}='{customer['customerId']}'"
     records = airtable_search(CUSTOMERS_TABLE_ID, formula)
 
     if records:
-        print("✅ Customer already exists")
         return records[0]["id"]
-
-    print("🆕 Creating new customer")
 
     record = airtable_create(
         CUSTOMERS_TABLE_ID,
         {
-            "Trendyol Id": customer_id,
+            "Trendyol Id": customer["customerId"],
             "Name": customer["name"],
             "Address": customer["address"],
             "Acquired sales channel": "Trendyol"
         }
     )
 
-    if record:
-        print("✅ Customer created:", record["id"])
-        return record["id"]
-
-    return None
+    return record["id"] if record else None
 
 # ---------------- ORDER ----------------
 def order_exists(order_id):
-    print(f"🧾 Checking order existence | {order_id}")
     formula = f"{{Order ID}}='{order_id}'"
-    records = airtable_search(ORDERS_TABLE_ID, formula)
-    return len(records) > 0
+    return len(airtable_search(ORDERS_TABLE_ID, formula)) > 0
 
 
 def create_order(order, customer_record_id):
-    print(f"🆕 Creating order | {order['orderId']}")
-
     airtable_create(
         ORDERS_TABLE_ID,
         {
@@ -131,70 +105,36 @@ def create_order(order, customer_record_id):
         }
     )
 
-    print("✅ Order created")
-
-# ---------------- MANUAL TEST ENDPOINT ----------------
-@app.route("/trendyol/order", methods=["POST"])
-def receive_trendyol_order():
-    try:
-        data = request.json
-        print("📨 Incoming manual payload:", data)
-
-        if order_exists(data["orderId"]):
-            print("⏭️ Duplicate order, skipping")
-            return jsonify({"status": "skipped"}), 200
-
-        customer_id = get_or_create_customer(data["customer"])
-        create_order(data, customer_id)
-
-        return jsonify({"status": "success"}), 201
-
-    except Exception as e:
-        print("❌ Processing error:", e)
-        return jsonify({"error": "internal error"}), 500
-
-# ---------------- TRENDYOL SYNC (DATE FILTERED) ----------------
+# ---------------- TRENDYOL SYNC (CORRECT FILTER) ----------------
 @app.route("/trendyol/sync", methods=["GET"])
 def sync_trendyol_orders():
-    if not TRENDYOL_API_KEY:
-        return jsonify({"error": "Trendyol API not configured"}), 400
-
     try:
         url = f"{TRENDYOL_BASE_URL}/integration/order/sellers/{TRENDYOL_SELLER_ID}/shipment-packages"
 
-        # 📅 Orders created on 01/02/2026
-        start_date = 1769904000000  # 01-02-2026 00:00:00
-        end_date = 1769990399000    # 01-02-2026 23:59:59
-
-        # ✅ FIX 2: Correct parameter names
+        # 📅 01/02/2026 (from Seller Panel)
         params = {
             "page": 0,
             "size": 50,
-            "orderDateStart": start_date,
-            "orderDateEnd": end_date
+            "originShipmentStartDate": 1769884200000,
+            "originShipmentEndDate": 1769970599999
         }
 
-        print("📡 Fetching Trendyol orders")
-        print("📅 Date filter: 01/02/2026")
-        print("⏱️ orderDateStart:", start_date)
-        print("⏱️ orderDateEnd:", end_date)
+        print("📡 Fetching Trendyol shipment packages")
+        print("📨 Params:", params)
 
         r = requests.get(url, headers=TRENDYOL_HEADERS, params=params)
-        print("➡️ Trendyol response status:", r.status_code)
-        print("📨 Trendyol raw response:", r.text)
+        print("➡️ Status:", r.status_code)
+        print("📨 Raw response:", r.text)
         r.raise_for_status()
 
         packages = r.json().get("content", [])
-        print(f"📦 Total packages received: {len(packages)}")
+        print(f"📦 Packages received: {len(packages)}")
 
         processed = 0
 
         for pkg in packages:
             order_id = str(pkg["orderNumber"])
-            print("🧾 Processing order:", order_id)
-
             if order_exists(order_id):
-                print("⏭️ Order already exists, skipping")
                 continue
 
             customer = {
@@ -203,7 +143,7 @@ def sync_trendyol_orders():
                 "address": pkg.get("shipmentAddress", {}).get("fullAddress", "")
             }
 
-            customer_record_id = get_or_create_customer(customer)
+            customer_id = get_or_create_customer(customer)
 
             order = {
                 "orderId": order_id,
@@ -212,11 +152,10 @@ def sync_trendyol_orders():
                 "productName": pkg["lines"][0]["productName"]
             }
 
-            create_order(order, customer_record_id)
+            create_order(order, customer_id)
             processed += 1
-            print("✅ Order synced:", order_id)
 
-        print("🎉 Sync completed | Total new orders:", processed)
+        print("🎉 Sync completed:", processed)
         return jsonify({"synced": processed}), 200
 
     except Exception as e:

@@ -18,7 +18,9 @@ print("🔧 CONFIG LOADED")
 print("BASE_ID:", BASE_ID)
 print("CUSTOMERS_TABLE_ID:", CUSTOMERS_TABLE_ID)
 print("ORDERS_TABLE_ID:", ORDERS_TABLE_ID)
+print("TRENDYOL_SELLER_ID:", TRENDYOL_SELLER_ID)
 
+# ---------------- HEADERS ----------------
 AIRTABLE_HEADERS = {
     "Authorization": f"Bearer {AIRTABLE_TOKEN}",
     "Content-Type": "application/json"
@@ -28,11 +30,12 @@ TRENDYOL_HEADERS = {
     "User-Agent": "TrendyolAirtableSync/1.0",
     "ApiKey": TRENDYOL_API_KEY,
     "Secret": TRENDYOL_API_SECRET,
+    "storeFrontCode": "UAE",   # ✅ REQUIRED FOR AE
     "Content-Type": "application/json"
 }
 
 AIRTABLE_URL = "https://api.airtable.com/v0"
-TRENDYOL_BASE_URL = "https://apigw.trendyol.com"
+TRENDYOL_BASE_URL = "https://apigw.trendyol.com/ae"  # ✅ AE REGION
 
 # ---------------- HEALTH CHECK ----------------
 @app.route("/health", methods=["GET"])
@@ -139,23 +142,26 @@ def receive_trendyol_order():
         print("❌ Processing error:", e)
         return jsonify({"error": "internal error"}), 500
 
-# ---------------- TRENDYOL SYNC (REAL API) ----------------
+# ---------------- TRENDYOL SYNC ----------------
 @app.route("/trendyol/sync", methods=["GET"])
 def sync_trendyol_orders():
     if not TRENDYOL_API_KEY:
         return jsonify({"error": "Trendyol API not configured"}), 400
 
     try:
+        print("📡 Fetching Trendyol shipment-packages")
+
         url = f"{TRENDYOL_BASE_URL}/integration/order/sellers/{TRENDYOL_SELLER_ID}/shipment-packages"
         params = {"page": 0, "size": 10}
 
-        print("📡 Fetching orders from Trendyol")
         r = requests.get(url, headers=TRENDYOL_HEADERS, params=params)
+        print("➡️ Status:", r.status_code)
+        print("📨 Raw:", r.text)
         r.raise_for_status()
 
         packages = r.json().get("content", [])
-
         processed = 0
+
         for pkg in packages:
             order_id = str(pkg["orderNumber"])
 

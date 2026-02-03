@@ -30,7 +30,7 @@ TRENDYOL_HEADERS = {
     "User-Agent": "TrendyolAirtableSync/1.0",
     "ApiKey": TRENDYOL_API_KEY,
     "Secret": TRENDYOL_API_SECRET,
-    "storeFrontCode": "UAE",   # ✅ REQUIRED FOR AE
+    "storeFrontCode": "AE",   # ✅ REQUIRED FOR AE
     "Content-Type": "application/json"
 }
 

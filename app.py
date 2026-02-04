@@ -161,6 +161,13 @@ def sync_trendyol_orders():
         print("❌ Trendyol sync error:", e)
         return jsonify({"error": "sync failed"}), 500
 
+        # ---------------- SERVER IP CHECK ----------------
+@app.route("/ip", methods=["GET"])
+def ip():
+    import requests
+    return requests.get("https://api.ipify.org").text
+
+
 # ---------------- RUN ----------------
 if __name__ == "__main__":
     print("🔥 Flask server running")

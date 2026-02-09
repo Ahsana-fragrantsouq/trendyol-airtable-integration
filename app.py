@@ -1,6 +1,7 @@
 import os
 import base64
 import requests
+import time
 from flask import Flask, jsonify
 
 app = Flask(__name__)
@@ -26,16 +27,28 @@ def connection_test():
             f"{api_key}:{api_secret}".encode()
         ).decode()
 
+        # REQUIRED date params (milliseconds)
+        now = int(time.time() * 1000)
+        one_day_ago = now - (24 * 60 * 60 * 1000)
+
         r = requests.get(
             f"https://api.trendyol.com/sapigw/suppliers/{seller_id}/orders",
             headers={
                 "Authorization": f"Basic {auth}",
-                "User-Agent": "RenderConnectionTest"
+                "User-Agent": "RenderConnectionTest",
+                "Accept": "application/json"
+            },
+            params={
+                "startDate": one_day_ago,
+                "endDate": now,
+                "page": 0,
+                "size": 1
             },
             timeout=10
         )
 
         print(f"📦 Trendyol response status: {r.status_code}")
+        print(f"📦 Trendyol response body (debug): {r.text[:300]}")
         results["trendyol"] = r.status_code
 
     except Exception as e:

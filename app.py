@@ -1,6 +1,7 @@
 import os
 import threading
 import requests
+import base64
 from flask import Flask, jsonify
 from datetime import datetime
 
@@ -28,8 +29,12 @@ AIRTABLE_HEADERS = {
     "Content-Type": "application/json"
 }
 
+# 🔐 CORRECT Trendyol Basic Auth (Base64)
+auth_string = f"{API_KEY}:{API_SECRET}"
+encoded_auth = base64.b64encode(auth_string.encode()).decode()
+
 TRENDYOL_HEADERS = {
-    "Authorization": f"Basic {API_KEY}:{API_SECRET}",
+    "Authorization": f"Basic {encoded_auth}",
     "Accept": "application/json",
     "User-Agent": "TrendyolAirtableSync/1.0",
     "storeFrontCode": "AE"
@@ -118,7 +123,7 @@ def sync_orders_background():
         res = requests.get(url, headers=TRENDYOL_HEADERS, params=params)
 
         if res.status_code != 200:
-            log(f"❌ Trendyol API error {res.status_code}")
+            log(f"❌ Trendyol API error {res.status_code} | {res.text}")
             return
 
         orders = res.json().get("content", [])
@@ -183,4 +188,4 @@ def trigger_sync():
 # LOCAL RUN
 # ===============================
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5000)
+    app.run(host="0.0.0.0", port=10000)

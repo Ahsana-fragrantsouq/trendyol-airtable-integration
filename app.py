@@ -22,6 +22,12 @@ API_KEY = os.getenv("API_KEY")
 API_SECRET = os.getenv("API_SECRET")
 
 # ===============================
+# GLOBAL LOCKS
+# ===============================
+sync_lock = threading.Lock()
+customer_lock = threading.Lock()
+
+# ===============================
 # HEADERS
 # ===============================
 AIRTABLE_HEADERS = {
@@ -29,7 +35,6 @@ AIRTABLE_HEADERS = {
     "Content-Type": "application/json"
 }
 
-# 🔐 CORRECT Trendyol Basic Auth (Base64)
 auth_string = f"{API_KEY}:{API_SECRET}"
 encoded_auth = base64.b64encode(auth_string.encode()).decode()
 
@@ -41,7 +46,7 @@ TRENDYOL_HEADERS = {
 }
 
 # ===============================
-# UTIL LOG
+# LOG
 # ===============================
 def log(msg):
     print(f"[{datetime.utcnow()}] {msg}", flush=True)
@@ -52,89 +57,95 @@ def log(msg):
 def airtable_get(table, formula):
     url = f"https://api.airtable.com/v0/{BASE_ID}/{table}"
     params = {"filterByFormula": formula}
-    log(f"📡 Airtable GET → {table} | Formula: {formula}")
+    log(f"📡 Airtable GET → {table} | {formula}")
     return requests.get(url, headers=AIRTABLE_HEADERS, params=params).json()
 
 def airtable_create(table, fields):
     url = f"https://api.airtable.com/v0/{BASE_ID}/{table}"
-    log(f"📝 Airtable CREATE → {table}")
     res = requests.post(url, headers=AIRTABLE_HEADERS, json={"fields": fields})
+
+    if res.status_code not in (200, 201):
+        log(f"❌ Airtable CREATE failed → {res.text}")
+        return None
+
     return res.json()
 
 # ===============================
-# CHECK ORDER EXISTS
+# CHECK ORDER
 # ===============================
 def order_exists(order_id):
     res = airtable_get(ORDERS_TABLE, f"{{Order ID}}='{order_id}'")
     return len(res.get("records", [])) > 0
 
 # ===============================
-# CUSTOMER
+# CUSTOMER (THREAD SAFE)
 # ===============================
 def get_or_create_customer(customer):
     trendyol_id = str(customer["id"])
-    log(f"👤 Searching customer {trendyol_id}")
 
-    res = airtable_get(CUSTOMERS_TABLE, f"{{Trendyol Id}}='{trendyol_id}'")
-    records = res.get("records", [])
+    with customer_lock:
+        res = airtable_get(CUSTOMERS_TABLE, f"{{Trendyol Id}}='{trendyol_id}'")
+        records = res.get("records", [])
 
-    if records:
-        record_id = records[0]["id"]
-        log(f"✅ Customer exists → {record_id}")
-        return record_id
+        if records:
+            log(f"✅ Customer exists → {records[0]['id']}")
+            return records[0]["id"]
 
-    log("➕ Creating new customer")
-    created = airtable_create(CUSTOMERS_TABLE, {
-        "Name": f'{customer.get("firstName","")} {customer.get("lastName","")}',
-        "Trendyol Id": trendyol_id,
-        "Contact Number": customer.get("phone"),
-        "Address": customer.get("address"),
-        "Acquired sales channel": "Trendyol"
-    })
+        log(f"➕ Creating customer {trendyol_id}")
+        created = airtable_create(CUSTOMERS_TABLE, {
+            "Name": f"{customer.get('firstName','')} {customer.get('lastName','')}",
+            "Trendyol Id": trendyol_id,
+            "Contact Number": customer.get("phone"),
+            "Address": customer.get("address"),
+            "Acquired sales channel": "Trendyol"
+        })
 
-    record_id = created["id"]
-    log(f"✅ Customer created → {record_id}")
-    return record_id
+        return created["id"] if created else None
 
 # ===============================
 # INVENTORY
 # ===============================
-def get_inventory_record(sku):
-    log(f"📦 Searching inventory SKU: {sku}")
-    res = airtable_get(FRENCH_INVENTORIES_TABLE, f"{{SKU}}='{sku}'")
-    records = res.get("records", [])
-    if records:
-        log(f"✅ SKU found → {records[0]['id']}")
-        return records[0]["id"]
-    log("⚠️ SKU not found in inventory")
-    return None
+def get_inventory_ids(lines):
+    ids = []
+
+    for line in lines:
+        sku = line.get("merchantSku")
+        if not sku or sku == "merchantSku":
+            continue
+
+        res = airtable_get(FRENCH_INVENTORIES_TABLE, f"{{SKU}}='{sku}'")
+        records = res.get("records", [])
+        if records:
+            ids.append(records[0]["id"])
+
+    return ids
 
 # ===============================
-# BACKGROUND SYNC
+# SYNC LOGIC
 # ===============================
-def sync_orders_background():
+def sync_orders():
+    if not sync_lock.acquire(blocking=False):
+        log("⏭️ Sync already running, skipping")
+        return
+
     try:
-        log("🚀 Trendyol → Airtable sync started")
+        log("🚀 Sync started")
 
         url = f"https://apigw.trendyol.com/integration/order/sellers/{SELLER_ID}/orders"
-        params = {"page": 0, "size": 50}
-
-        log("🔐 Calling Trendyol API...")
-        res = requests.get(url, headers=TRENDYOL_HEADERS, params=params)
+        res = requests.get(url, headers=TRENDYOL_HEADERS, params={"page": 0, "size": 50})
 
         if res.status_code != 200:
-            log(f"❌ Trendyol API error {res.status_code} | {res.text}")
+            log(f"❌ Trendyol error {res.status_code}")
             return
 
         orders = res.json().get("content", [])
-        log(f"✅ Trendyol response 200 | Orders fetched: {len(orders)}")
+        log(f"📦 Orders fetched: {len(orders)}")
 
         for order in orders:
             order_id = str(order["id"])
-            log(f"🔍 Processing order {order_id}")
 
             if order_exists(order_id):
-                log("⏭️ Order already exists, skipping")
+                log(f"⏭️ Order {order_id} exists")
                 continue
 
             customer_id = get_or_create_customer({
@@ -145,47 +156,38 @@ def sync_orders_background():
                 "address": order["shipmentAddress"].get("address1")
             })
 
-            for line in order["lines"]:
-                sku = line.get("merchantSku")
-                if not sku or sku == "merchantSku":
-                    log("⚠️ Invalid SKU, skipping line")
-                    continue
+            inventory_ids = get_inventory_ids(order["lines"])
 
-                inventory_id = get_inventory_record(sku)
+            record = airtable_create(ORDERS_TABLE, {
+                "Order ID": order_id,
+                "Order Number": str(order.get("orderNumber")),
+                "Customer": [customer_id] if customer_id else [],
+                "Item SKU": inventory_ids,
+                "Order Date": order["orderDate"],
+                "Sales Channel": "Trendyol",
+                "Payment Status": "Pending",
+                "Shipping Status": "New"
+            })
 
-                airtable_create(ORDERS_TABLE, {
-                    "Order ID": order_id,
-                    "Order Number": str(order.get("orderNumber")),
-                    "Customer": [customer_id],
-                    "Item SKU": [inventory_id] if inventory_id else [],
-                    "Order Date": order["orderDate"],
-                    "Sales Channel": "Trendyol",
-                    "Payment Status": "Pending",
-                    "Shipping Status": "New"
-                })
+            if record:
+                log(f"✅ Order {order_id} created")
 
-                log("✅ Order created successfully")
+        log("🏁 Sync finished")
 
-        log("🏁 Sync finished successfully")
-
-    except Exception as e:
-        log(f"🔥 Fatal error: {e}")
+    finally:
+        sync_lock.release()
 
 # ===============================
-# HTTP ENDPOINT
+# ENDPOINT
 # ===============================
 @app.route("/", methods=["GET"])
-def trigger_sync():
+def trigger():
     log("📥 Sync request received")
-
-    thread = threading.Thread(target=sync_orders_background)
-    thread.start()
-
-    log("🧵 Background sync started")
+    threading.Thread(target=sync_orders).start()
     return jsonify({"status": "sync started"}), 200
 
 # ===============================
-# LOCAL RUN
+# RUN
 # ===============================
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=10000)

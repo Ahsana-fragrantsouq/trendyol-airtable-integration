@@ -108,18 +108,20 @@ def get_inventory_record(sku):
     return None
 
 # ===============================
-# SYNC LOGIC (CORRECT)
+# SYNC LOGIC (FINAL FIX)
 # ===============================
 def sync_orders_background():
     global LAST_SYNC_DATE
 
     log("🚀 Trendyol → Airtable sync started")
 
-    # If no last sync → last 24 hours
+    # Default: last 24 hours
     if not LAST_SYNC_DATE:
         start_dt = datetime.now(timezone.utc) - timedelta(days=1)
         LAST_SYNC_DATE = str(int(start_dt.timestamp() * 1000))
         log(f"🕒 LAST_SYNC_DATE not set, defaulting to {LAST_SYNC_DATE}")
+
+    last_sync_ms = int(LAST_SYNC_DATE)
 
     url = f"https://apigw.trendyol.com/integration/order/sellers/{SELLER_ID}/orders"
     params = {
@@ -138,16 +140,23 @@ def sync_orders_background():
     orders = res.json().get("content", [])
     log(f"📦 Orders fetched: {len(orders)}")
 
-    newest_order_time = None
+    newest_order_time = last_sync_ms
 
     for order in orders:
         order_id = str(order["id"])
+        order_time = order["orderDate"]
+
         log(f"🔍 Processing order {order_id}")
 
-        # Skip if already exists
+        # 🔴 HARD STOP FOR OLD ORDERS
+        if order_time <= last_sync_ms:
+            log(f"⏭️ Skipping old order {order_id}")
+            continue
+
+        # Skip duplicates in Airtable
         exists = airtable_get(ORDERS_TABLE, f"{{Order ID}}='{order_id}'")
         if exists.get("records"):
-            log("⏭️ Order already exists, skipping")
+            log("⏭️ Order already exists in Airtable")
             continue
 
         customer_id = get_or_create_customer({
@@ -174,7 +183,7 @@ def sync_orders_background():
             "Customer": [customer_id] if customer_id else [],
             "Item SKU": sku_links,
             "Order Date": datetime.fromtimestamp(
-                order["orderDate"] / 1000
+                order_time / 1000
             ).strftime("%Y-%m-%d"),
             "Sales Channel": "Trendyol",
             "Payment Status": "Pending",
@@ -182,13 +191,10 @@ def sync_orders_background():
         })
 
         log(f"✅ Order {order_id} created with {len(sku_links)} items")
-        newest_order_time = max(newest_order_time or 0, order["orderDate"])
+        newest_order_time = max(newest_order_time, order_time)
 
-    # IMPORTANT NOTE
-    if newest_order_time:
-        log(
-            f"🕒 Update LAST_SYNC_DATE in Render ENV to → {newest_order_time}"
-        )
+    if newest_order_time > last_sync_ms:
+        log(f"🕒 Update LAST_SYNC_DATE in Render ENV to → {newest_order_time}")
 
     log("🏁 Sync finished")
 

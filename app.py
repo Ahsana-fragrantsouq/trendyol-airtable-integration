@@ -1,7 +1,7 @@
 import os
 import requests
 import base64
-from flask import Flask, jsonify
+from flask import Flask, jsonify, request
 from datetime import datetime, timezone, timedelta
 
 app = Flask(__name__)
@@ -20,8 +20,11 @@ SELLER_ID = os.getenv("SELLER_ID")
 API_KEY = os.getenv("API_KEY")
 API_SECRET = os.getenv("API_SECRET")
 
-# Epoch milliseconds (string)
+# Stored as epoch milliseconds (string)
 LAST_SYNC_DATE = os.getenv("LAST_SYNC_DATE")
+
+# Optional protection for /sync
+SYNC_SECRET = os.getenv("SYNC_SECRET")
 
 # ======================================================
 # HEADERS
@@ -31,8 +34,9 @@ AIRTABLE_HEADERS = {
     "Content-Type": "application/json"
 }
 
-auth_string = f"{API_KEY}:{API_SECRET}"
-encoded_auth = base64.b64encode(auth_string.encode()).decode()
+encoded_auth = base64.b64encode(
+    f"{API_KEY}:{API_SECRET}".encode()
+).decode()
 
 TRENDYOL_HEADERS = {
     "Authorization": f"Basic {encoded_auth}",
@@ -103,7 +107,7 @@ def sync_orders():
 
     log("🚀 Trendyol → Airtable sync started")
 
-    # Default: last 24 hours (first run only)
+    # First run → last 24 hours only
     if not LAST_SYNC_DATE:
         start_dt = datetime.now(timezone.utc) - timedelta(days=1)
         LAST_SYNC_DATE = str(int(start_dt.timestamp() * 1000))
@@ -131,7 +135,7 @@ def sync_orders():
     for order in orders:
         order_id = str(order["id"])
 
-        # Skip if order already exists
+        # Skip existing orders
         exists = airtable_get(ORDERS_TABLE, f"{{Order ID}}='{order_id}'")
         if exists.get("records"):
             continue
@@ -170,16 +174,26 @@ def sync_orders():
     log("🏁 Sync finished")
 
 # ======================================================
-# HTTP ENDPOINT
+# HEALTH CHECK (Render-safe)
 # ======================================================
-@app.route("/", methods=["GET"])
+@app.route("/health", methods=["GET", "HEAD"])
+def health():
+    return "ok", 200
+
+# ======================================================
+# SYNC ENDPOINT (MANUAL / EXTERNAL TRIGGER)
+# ======================================================
+@app.route("/sync", methods=["POST"])
 def trigger_sync():
-    log("📥 Sync request received")
+    if SYNC_SECRET and request.headers.get("X-Secret") != SYNC_SECRET:
+        return "Unauthorized", 401
+
+    log("📥 Sync triggered")
     sync_orders()
     return jsonify({"status": "sync completed"}), 200
 
 # ======================================================
-# RUN (LOCAL / RENDER)
+# RUN
 # ======================================================
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=10000)

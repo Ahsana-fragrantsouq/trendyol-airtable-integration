@@ -3,12 +3,16 @@ import requests
 import base64
 from flask import Flask, jsonify, request
 from datetime import datetime, timezone, timedelta
-
 import logging
 
-# Silence Werkzeug logs for /health
-import logging
+# ================= APSCHEDULER =================
+from apscheduler.schedulers.background import BackgroundScheduler
+from apscheduler.triggers.cron import CronTrigger
+import pytz
 
+# ======================================================
+# SILENCE WERKZEUG /health LOGS
+# ======================================================
 class HealthCheckFilter(logging.Filter):
     def filter(self, record):
         return "/health" not in record.getMessage()
@@ -16,8 +20,9 @@ class HealthCheckFilter(logging.Filter):
 werkzeug_logger = logging.getLogger("werkzeug")
 werkzeug_logger.addFilter(HealthCheckFilter())
 
-
-
+# ======================================================
+# APP
+# ======================================================
 app = Flask(__name__)
 
 # ======================================================
@@ -37,7 +42,7 @@ API_SECRET = os.getenv("API_SECRET")
 # Stored as epoch milliseconds (string)
 LAST_SYNC_DATE = os.getenv("LAST_SYNC_DATE")
 
-# Optional protection for /sync
+# Optional protection for manual sync
 SYNC_SECRET = os.getenv("SYNC_SECRET")
 
 # ======================================================
@@ -60,7 +65,7 @@ TRENDYOL_HEADERS = {
 }
 
 # ======================================================
-# LOG
+# LOG HELPER
 # ======================================================
 def log(msg):
     print(f"[{datetime.utcnow().isoformat()}] {msg}", flush=True)
@@ -121,7 +126,7 @@ def sync_orders():
 
     log("🚀 Trendyol → Airtable sync started")
 
-    # First run → last 24 hours only
+    # First run → last 24 hours
     if not LAST_SYNC_DATE:
         start_dt = datetime.now(timezone.utc) - timedelta(days=1)
         LAST_SYNC_DATE = str(int(start_dt.timestamp() * 1000))
@@ -134,7 +139,6 @@ def sync_orders():
         "startDate": LAST_SYNC_DATE
     }
 
-    log(f"🔐 Fetching orders since {LAST_SYNC_DATE}")
     res = requests.get(url, headers=TRENDYOL_HEADERS, params=params)
 
     if res.status_code != 200:
@@ -188,21 +192,38 @@ def sync_orders():
     log("🏁 Sync finished")
 
 # ======================================================
-# HEALTH CHECK (Render-safe)
+# SCHEDULER (4AM, 10AM, 4PM, 10PM IST)
+# ======================================================
+scheduler = BackgroundScheduler(timezone=pytz.timezone("Asia/Kolkata"))
+
+def scheduled_sync():
+    log("⏰ Scheduled sync triggered")
+    sync_orders()
+
+scheduler.add_job(scheduled_sync, CronTrigger(hour=4, minute=0))
+scheduler.add_job(scheduled_sync, CronTrigger(hour=10, minute=0))
+scheduler.add_job(scheduled_sync, CronTrigger(hour=16, minute=0))
+scheduler.add_job(scheduled_sync, CronTrigger(hour=22, minute=0))
+
+scheduler.start()
+log("🕰️ Scheduler started (4AM, 10AM, 4PM, 10PM IST)")
+
+# ======================================================
+# HEALTH CHECK
 # ======================================================
 @app.route("/health", methods=["GET", "HEAD"])
 def health():
     return "ok", 200
 
 # ======================================================
-# SYNC ENDPOINT (MANUAL / EXTERNAL TRIGGER)
+# MANUAL SYNC ENDPOINT
 # ======================================================
 @app.route("/sync", methods=["POST"])
 def trigger_sync():
     if SYNC_SECRET and request.headers.get("X-Secret") != SYNC_SECRET:
         return "Unauthorized", 401
 
-    log("📥 Sync triggered")
+    log("📥 Manual sync triggered")
     sync_orders()
     return jsonify({"status": "sync completed"}), 200
 

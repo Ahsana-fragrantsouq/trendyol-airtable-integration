@@ -1,3 +1,5 @@
 flask
 requests
+APScheduler==3.10.4
+pytz
 gunicorn

@@ -1,234 +1,174 @@
 import os
-import requests
 import base64
-from flask import Flask, jsonify, request
-from datetime import datetime, timezone, timedelta
-import logging
+import requests
+from flask import Flask, request, jsonify
 
-# ================= APSCHEDULER =================
-from apscheduler.schedulers.background import BackgroundScheduler
-from apscheduler.triggers.cron import CronTrigger
-import pytz
-
-# ======================================================
-# SILENCE WERKZEUG /health LOGS
-# ======================================================
-class HealthCheckFilter(logging.Filter):
-    def filter(self, record):
-        return "/health" not in record.getMessage()
-
-werkzeug_logger = logging.getLogger("werkzeug")
-werkzeug_logger.addFilter(HealthCheckFilter())
-
-# ======================================================
-# APP
-# ======================================================
 app = Flask(__name__)
 
-# ======================================================
-# ENV VARIABLES
-# ======================================================
+# ---------------- CONFIG ----------------
 AIRTABLE_TOKEN = os.getenv("AIRTABLE_TOKEN")
-BASE_ID = os.getenv("BASE_ID")
+BASE_ID = os.getenv("AIRTABLE_BASE_ID")
+CUSTOMERS_TABLE_ID = os.getenv("CUSTOMERS_TABLE_ID")
+ORDERS_TABLE_ID = os.getenv("ORDERS_TABLE_ID")
 
-ORDERS_TABLE = os.getenv("ORDERS_TABLE")
-CUSTOMERS_TABLE = os.getenv("CUSTOMERS_TABLE")
-FRENCH_INVENTORIES_TABLE = os.getenv("FRENCH_INVENTORIES_TABLE")
+TRENDYOL_SELLER_ID = os.getenv("TRENDYOL_SELLER_ID")
+TRENDYOL_API_KEY = os.getenv("TRENDYOL_API_KEY")
+TRENDYOL_API_SECRET = os.getenv("TRENDYOL_API_SECRET")
 
-SELLER_ID = os.getenv("SELLER_ID")
-API_KEY = os.getenv("API_KEY")
-API_SECRET = os.getenv("API_SECRET")
+print("🔧 CONFIG LOADED")
+print("BASE_ID:", BASE_ID)
+print("CUSTOMERS_TABLE_ID:", CUSTOMERS_TABLE_ID)
+print("ORDERS_TABLE_ID:", ORDERS_TABLE_ID)
+print("TRENDYOL_SELLER_ID:", TRENDYOL_SELLER_ID)
 
-# Stored as epoch milliseconds (string)
-LAST_SYNC_DATE = os.getenv("LAST_SYNC_DATE")
-
-# Optional protection for manual sync
-SYNC_SECRET = os.getenv("SYNC_SECRET")
-
-# ======================================================
-# HEADERS
-# ======================================================
+# ---------------- HEADERS ----------------
 AIRTABLE_HEADERS = {
     "Authorization": f"Bearer {AIRTABLE_TOKEN}",
     "Content-Type": "application/json"
 }
 
-encoded_auth = base64.b64encode(
-    f"{API_KEY}:{API_SECRET}".encode()
+# ✅ BASIC AUTH (ApiKey:Secret → Base64)
+basic_token = base64.b64encode(
+    f"{TRENDYOL_API_KEY}:{TRENDYOL_API_SECRET}".encode()
 ).decode()
 
 TRENDYOL_HEADERS = {
-    "Authorization": f"Basic {encoded_auth}",
-    "Accept": "application/json",
+    "Authorization": f"Basic {basic_token}",
+    "storeFrontCode": "AE",
     "User-Agent": "TrendyolAirtableSync/1.0",
-    "storeFrontCode": "AE"
+    "Content-Type": "application/json"
 }
 
-# ======================================================
-# LOG HELPER
-# ======================================================
-def log(msg):
-    print(f"[{datetime.utcnow().isoformat()}] {msg}", flush=True)
+AIRTABLE_URL = "https://api.airtable.com/v0"
+TRENDYOL_BASE_URL = "https://apigw.trendyol.com"
 
-# ======================================================
-# AIRTABLE HELPERS
-# ======================================================
-def airtable_get(table, formula):
-    url = f"https://api.airtable.com/v0/{BASE_ID}/{table}"
+# ---------------- HEALTH CHECK ----------------
+@app.route("/health", methods=["GET"])
+def health():
+    return jsonify({"status": "ok"}), 200
+
+# ---------------- AIRTABLE HELPERS ----------------
+def airtable_search(table_id, formula):
+    url = f"{AIRTABLE_URL}/{BASE_ID}/{table_id}"
     params = {"filterByFormula": formula}
-    return requests.get(url, headers=AIRTABLE_HEADERS, params=params).json()
 
-def airtable_create(table, fields):
-    url = f"https://api.airtable.com/v0/{BASE_ID}/{table}"
-    res = requests.post(url, headers=AIRTABLE_HEADERS, json={"fields": fields})
+    print(f"🔍 Airtable search | {formula}")
+    r = requests.get(url, headers=AIRTABLE_HEADERS, params=params)
+    r.raise_for_status()
+    return r.json().get("records", [])
 
-    if res.status_code >= 300:
-        log(f"❌ Airtable CREATE failed → {res.text}")
-        return None
 
-    return res.json()
+def airtable_create(table_id, fields):
+    url = f"{AIRTABLE_URL}/{BASE_ID}/{table_id}"
+    payload = {"fields": fields}
 
-# ======================================================
-# CUSTOMER
-# ======================================================
-def get_or_create_customer(order):
-    trendyol_id = str(order["customerId"])
+    print(f"➕ Airtable create | {fields}")
+    r = requests.post(url, headers=AIRTABLE_HEADERS, json=payload)
+    r.raise_for_status()
+    return r.json()
 
-    res = airtable_get(CUSTOMERS_TABLE, f"{{Trendyol Id}}='{trendyol_id}'")
-    records = res.get("records", [])
+# ---------------- CUSTOMER ----------------
+def get_or_create_customer(customer):
+    formula = f"{{Trendyol Id}}='{customer['customerId']}'"
+    records = airtable_search(CUSTOMERS_TABLE_ID, formula)
 
     if records:
+        print("✅ Customer exists")
         return records[0]["id"]
 
-    created = airtable_create(CUSTOMERS_TABLE, {
-        "Name": f'{order["shipmentAddress"]["firstName"]} {order["shipmentAddress"]["lastName"]}',
-        "Trendyol Id": trendyol_id,
-        "Contact Number": order["shipmentAddress"].get("phone"),
-        "Address": order["shipmentAddress"].get("address1"),
-        "Acquired sales channel": "Trendyol"
-    })
+    print("🆕 Creating new customer")
 
-    return created["id"] if created else None
+    record = airtable_create(
+        CUSTOMERS_TABLE_ID,
+        {
+            "Trendyol Id": customer["customerId"],
+            "Name": customer["name"],
+            "Address": customer["address"],
+            "Acquired sales channel": "Trendyol"
+        }
+    )
+    return record["id"]
 
-# ======================================================
-# INVENTORY
-# ======================================================
-def get_inventory_record(sku):
-    res = airtable_get(FRENCH_INVENTORIES_TABLE, f"{{SKU}}='{sku}'")
-    records = res.get("records", [])
-    return records[0]["id"] if records else None
+# ---------------- ORDER ----------------
+def order_exists(order_id):
+    formula = f"{{Order ID}}='{order_id}'"
+    records = airtable_search(ORDERS_TABLE_ID, formula)
+    return len(records) > 0
 
-# ======================================================
-# MAIN SYNC LOGIC
-# ======================================================
-def sync_orders():
-    global LAST_SYNC_DATE
 
-    log("🚀 Trendyol → Airtable sync started")
+def create_order(order, customer_record_id):
+    print(f"🆕 Creating order {order['orderId']}")
+    airtable_create(
+        ORDERS_TABLE_ID,
+        {
+            "Order ID": order["orderId"],
+            "Customer": [customer_record_id],
+            "Order Date": order["orderDate"],
+            "Item SKU": order["sku"],
+            "Product Name": order["productName"],
+            "Payment Status": "Pending",
+            "Shipping Status": "New",
+            "Sales Channel": "Trendyol"
+        }
+    )
 
-    # First run → last 24 hours
-    if not LAST_SYNC_DATE:
-        start_dt = datetime.now(timezone.utc) - timedelta(days=1)
-        LAST_SYNC_DATE = str(int(start_dt.timestamp() * 1000))
-        log(f"🕒 LAST_SYNC_DATE defaulted → {LAST_SYNC_DATE}")
+# ---------------- TRENDYOL SYNC (ORDERS API) ----------------
+@app.route("/trendyol/sync", methods=["GET"])
+def sync_trendyol_orders():
+    try:
+        print("📡 Fetching Trendyol orders")
 
-    url = f"https://apigw.trendyol.com/integration/order/sellers/{SELLER_ID}/orders"
-    params = {
-        "page": 0,
-        "size": 50,
-        "startDate": LAST_SYNC_DATE
-    }
+        url = f"{TRENDYOL_BASE_URL}/integration/order/sellers/{TRENDYOL_SELLER_ID}/orders"
+        params = {"page": 0, "size": 10}
 
-    res = requests.get(url, headers=TRENDYOL_HEADERS, params=params)
+        r = requests.get(url, headers=TRENDYOL_HEADERS, params=params)
+        print("➡️ Status:", r.status_code)
+        print("📨 Raw:", r.text)
+        r.raise_for_status()
 
-    if res.status_code != 200:
-        log(f"❌ Trendyol API error {res.status_code} → {res.text}")
-        return
+        orders = r.json().get("content", [])
+        processed = 0
 
-    orders = res.json().get("content", [])
-    log(f"📦 Orders fetched: {len(orders)}")
+        for o in orders:
+            order_id = str(o["orderNumber"])
 
-    newest_order_time = None
-
-    for order in orders:
-        order_id = str(order["id"])
-
-        # Skip existing orders
-        exists = airtable_get(ORDERS_TABLE, f"{{Order ID}}='{order_id}'")
-        if exists.get("records"):
-            continue
-
-        customer_id = get_or_create_customer(order)
-
-        sku_links = []
-        for line in order["lines"]:
-            sku = line.get("merchantSku")
-            if not sku:
+            if order_exists(order_id):
+                print("⏭️ Skipping existing order:", order_id)
                 continue
 
-            inv_id = get_inventory_record(sku)
-            if inv_id:
-                sku_links.append(inv_id)
+            customer = {
+                "customerId": str(o["customerId"]),
+                "name": f"{o.get('customerFirstName','')} {o.get('customerLastName','')}",
+                "address": o.get("shipmentAddress", {}).get("fullAddress", "")
+            }
 
-        airtable_create(ORDERS_TABLE, {
-            "Order ID": order_id,
-            "Order Number": str(order.get("orderNumber")),
-            "Customer": [customer_id] if customer_id else [],
-            "Item SKU": sku_links,
-            "Order Date": datetime.fromtimestamp(
-                order["orderDate"] / 1000
-            ).strftime("%Y-%m-%d"),
-            "Sales Channel": "Trendyol",
-            "Payment Status": "Pending",
-            "Shipping Status": "New"
-        })
+            customer_record_id = get_or_create_customer(customer)
 
-        log(f"✅ Order {order_id} created ({len(sku_links)} items)")
-        newest_order_time = max(newest_order_time or 0, order["orderDate"])
+            order = {
+                "orderId": order_id,
+                "orderDate": o.get("orderDate"),
+                "sku": o["lines"][0]["merchantSku"],
+                "productName": o["lines"][0]["productName"]
+            }
 
-    if newest_order_time:
-        log(f"🕒 UPDATE Render ENV → LAST_SYNC_DATE={newest_order_time}")
+            create_order(order, customer_record_id)
+            processed += 1
+            print("✅ Synced order:", order_id)
 
-    log("🏁 Sync finished")
+        return jsonify({"synced": processed}), 200
 
-# ======================================================
-# SCHEDULER (4AM, 10AM, 4PM, 10PM IST)
-# ======================================================
-scheduler = BackgroundScheduler(timezone=pytz.timezone("Asia/Kolkata"))
+    except Exception as e:
+        print("❌ Trendyol sync error:", e)
+        return jsonify({"error": "sync failed"}), 500
 
-def scheduled_sync():
-    log("⏰ Scheduled sync triggered")
-    sync_orders()
+        # ---------------- SERVER IP CHECK ----------------
+@app.route("/ip", methods=["GET"])
+def ip():
+    import requests
+    return requests.get("https://api.ipify.org").text
 
-scheduler.add_job(scheduled_sync, CronTrigger(hour=5, minute=0))
-scheduler.add_job(scheduled_sync, CronTrigger(hour=7, minute=0))
-scheduler.add_job(scheduled_sync, CronTrigger(hour=10, minute=0))
-scheduler.add_job(scheduled_sync, CronTrigger(hour=17, minute=15))
 
-scheduler.start()
-log("🕰️ Scheduler started (4AM, 10AM, 4PM, 10PM IST)")
-
-# ======================================================
-# HEALTH CHECK
-# ======================================================
-@app.route("/health", methods=["GET", "HEAD"])
-def health():
-    return "ok", 200
-
-# ======================================================
-# MANUAL SYNC ENDPOINT
-# ======================================================
-@app.route("/sync", methods=["POST"])
-def trigger_sync():
-    if SYNC_SECRET and request.headers.get("X-Secret") != SYNC_SECRET:
-        return "Unauthorized", 401
-
-    log("📥 Manual sync triggered")
-    sync_orders()
-    return jsonify({"status": "sync completed"}), 200
-
-# ======================================================
-# RUN
-# ======================================================
+# ---------------- RUN ----------------
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=10000)
+    print("🔥 Flask server running")
+    app.run(host="0.0.0.0", port=5000)

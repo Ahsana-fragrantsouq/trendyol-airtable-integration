@@ -2,6 +2,7 @@ import os
 import base64
 import requests
 import pytz
+from datetime import datetime
 from flask import Flask, jsonify
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
@@ -30,7 +31,6 @@ AIRTABLE_HEADERS = {
     "Content-Type": "application/json"
 }
 
-# Trendyol Basic Auth
 basic_token = base64.b64encode(
     f"{TRENDYOL_API_KEY}:{TRENDYOL_API_SECRET}".encode()
 ).decode()
@@ -64,6 +64,10 @@ def airtable_create(table_id, fields):
     url = f"{AIRTABLE_URL}/{BASE_ID}/{table_id}"
     payload = {"fields": fields}
     r = requests.post(url, headers=AIRTABLE_HEADERS, json=payload)
+
+    if not r.ok:
+        print("❌ Airtable error:", r.text)
+
     r.raise_for_status()
     return r.json()
 
@@ -100,8 +104,8 @@ def create_order(order, customer_record_id):
         ORDERS_TABLE_ID,
         {
             "Order ID": order["orderId"],
-            "Customer": [customer_record_id],
-            "Order Date": order["orderDate"],
+            "Customer": [customer_record_id],  # must be LINKED RECORD
+            "Order Date": order["orderDate"],  # ISO format
             "Item SKU": order["sku"],
             "Product Name": order["productName"],
             "Payment Status": "Pending",
@@ -131,6 +135,7 @@ def sync_trendyol_orders_job():
             if order_exists(order_id):
                 continue
 
+            # --- customer ---
             customer = {
                 "customerId": str(o["customerId"]),
                 "name": f"{o.get('customerFirstName','')} {o.get('customerLastName','')}",
@@ -139,11 +144,21 @@ def sync_trendyol_orders_job():
 
             customer_record_id = get_or_create_customer(customer)
 
+            # --- safe line handling ---
+            line = o.get("lines", [{}])[0]
+
+            # --- convert timestamp (ms → ISO date) ---
+            order_date = None
+            if o.get("orderDate"):
+                order_date = datetime.utcfromtimestamp(
+                    o["orderDate"] / 1000
+                ).strftime("%Y-%m-%d")
+
             order = {
                 "orderId": order_id,
-                "orderDate": o.get("orderDate"),
-                "sku": o["lines"][0]["merchantSku"],
-                "productName": o["lines"][0]["productName"]
+                "orderDate": order_date,
+                "sku": line.get("merchantSku", ""),
+                "productName": line.get("productName", "")
             }
 
             create_order(order, customer_record_id)
@@ -174,7 +189,7 @@ ist = pytz.timezone("Asia/Kolkata")
 scheduler = BackgroundScheduler(timezone=ist)
 
 scheduler.add_job(sync_trendyol_orders_job, CronTrigger(hour=4, minute=0), id="4am")
-scheduler.add_job(sync_trendyol_orders_job, CronTrigger(hour=17, minute=45), id="545pm")
+scheduler.add_job(sync_trendyol_orders_job, CronTrigger(hour=17, minute=55), id="545pm")
 scheduler.add_job(sync_trendyol_orders_job, CronTrigger(hour=18, minute=15), id="615pm")
 scheduler.add_job(sync_trendyol_orders_job, CronTrigger(hour=19, minute=0), id="7pm")
 

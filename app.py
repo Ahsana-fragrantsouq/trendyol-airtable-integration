@@ -182,9 +182,9 @@ ist = pytz.timezone("Asia/Kolkata")
 scheduler = BackgroundScheduler(timezone=ist)
 
 scheduler.add_job(sync_trendyol_orders_job, CronTrigger(hour=9, minute=0))
-scheduler.add_job(sync_trendyol_orders_job, CronTrigger(hour=18, minute=45))
-scheduler.add_job(sync_trendyol_orders_job, CronTrigger(hour=18, minute=55))
-scheduler.add_job(sync_trendyol_orders_job, CronTrigger(hour=19, minute=0))
+scheduler.add_job(sync_trendyol_orders_job, CronTrigger(hour=12, minute=0))
+scheduler.add_job(sync_trendyol_orders_job, CronTrigger(hour=18, minute=0))
+scheduler.add_job(sync_trendyol_orders_job, CronTrigger(hour=0, minute=0))
 
 scheduler.start()
 print("⏰ Scheduler started (IST)")

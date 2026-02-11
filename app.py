@@ -56,6 +56,28 @@ def airtable_create(table_id, fields):
     r.raise_for_status()
     return r.json()
 
+def map_shipping_status(trendyol_order):
+    status = str(trendyol_order.get("status", "")).lower()
+
+    if status in ["shipped", "delivered", "invoiced"]:
+        return "Shipped"
+
+    return "New"
+
+
+def map_payment_status(trendyol_order):
+    status = str(trendyol_order.get("status", "")).lower()
+
+    if status in ["invoiced", "paid"]:
+        return "Paid"
+    if status in ["cancelled"]:
+        return "Failed"
+    if status in ["refunded"]:
+        return "Refund"
+
+    return "Pending"
+
+
 # ---------------- CUSTOMER ----------------
 def get_or_create_customer(trendyol_customer):
     formula = f"{{Trendyol Id}}='{trendyol_customer['id']}'"
@@ -82,47 +104,64 @@ def order_exists(order_id):
     return len(records) > 0
 
 
-def create_order(order_id, customer_record_id, order_date):
+def create_order(order_id, customer_record_id, order_date, payment_status, shipping_status):
     airtable_create(
         ORDERS_TABLE_ID,
         {
             "Order ID": order_id,
             "Customer": [customer_record_id],
             "Order Date": order_date,
+            "Payment Status": payment_status,
+            "Shipping Status": shipping_status,
             "Sales Channel": "Trendyol"
         }
     )
+
 
 # ---------------- TRENDYOL SYNC ----------------
 def sync_trendyol_orders_job():
     try:
         print("⏰ Trendyol sync started")
 
-        r = requests.get(
+        response = requests.get(
             f"{TRENDYOL_BASE_URL}/integration/order/sellers/{TRENDYOL_SELLER_ID}/orders",
             headers=TRENDYOL_HEADERS,
             params={"page": 0, "size": 20}
         )
-        r.raise_for_status()
+        response.raise_for_status()
 
-        orders = r.json().get("content", [])
+        orders = response.json().get("content", [])
 
         for o in orders:
             order_id = str(o["orderNumber"])
 
+            # ---- skip if order already exists ----
             if order_exists(order_id):
-                continue  # Skip completely
+                continue
 
+            # ---- customer ----
             customer_record_id = get_or_create_customer({
                 "id": str(o["customerId"]),
-                "name": f"{o.get('customerFirstName','')} {o.get('customerLastName','')}"
+                "name": f"{o.get('customerFirstName', '')} {o.get('customerLastName', '')}"
             })
 
+            # ---- order date ----
             order_date = datetime.utcfromtimestamp(
                 o["orderDate"] / 1000
             ).strftime("%Y-%m-%d")
 
-            create_order(order_id, customer_record_id, order_date)
+            # ---- status mapping ----
+            payment_status = map_payment_status(o)
+            shipping_status = map_shipping_status(o)
+
+            # ---- create order ----
+            create_order(
+                order_id,
+                customer_record_id,
+                order_date,
+                payment_status,
+                shipping_status
+            )
 
             print("✅ Order synced:", order_id)
 
@@ -130,6 +169,7 @@ def sync_trendyol_orders_job():
 
     except Exception as e:
         print("❌ Sync error:", e)
+
 
 # ---------------- API (MANUAL TRIGGER) ----------------
 @app.route("/trendyol/sync")

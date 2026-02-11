@@ -4,6 +4,14 @@ import base64
 from flask import Flask, jsonify, request
 from datetime import datetime, timezone, timedelta
 
+import logging
+
+# Silence Werkzeug logs for /health
+loggers = ["werkzeug"]
+for logger in loggers:
+    logging.getLogger(logger).setLevel(logging.ERROR)
+
+
 app = Flask(__name__)
 
 # ======================================================

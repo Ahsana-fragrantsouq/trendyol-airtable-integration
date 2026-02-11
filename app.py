@@ -7,9 +7,15 @@ from datetime import datetime, timezone, timedelta
 import logging
 
 # Silence Werkzeug logs for /health
-loggers = ["werkzeug"]
-for logger in loggers:
-    logging.getLogger(logger).setLevel(logging.ERROR)
+import logging
+
+class HealthCheckFilter(logging.Filter):
+    def filter(self, record):
+        return "/health" not in record.getMessage()
+
+werkzeug_logger = logging.getLogger("werkzeug")
+werkzeug_logger.addFilter(HealthCheckFilter())
+
 
 
 app = Flask(__name__)

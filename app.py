@@ -200,10 +200,10 @@ def scheduled_sync():
     log("⏰ Scheduled sync triggered")
     sync_orders()
 
-scheduler.add_job(scheduled_sync, CronTrigger(hour=4, minute=0))
+scheduler.add_job(scheduled_sync, CronTrigger(hour=5, minute=0))
+scheduler.add_job(scheduled_sync, CronTrigger(hour=7, minute=0))
 scheduler.add_job(scheduled_sync, CronTrigger(hour=10, minute=0))
 scheduler.add_job(scheduled_sync, CronTrigger(hour=16, minute=0))
-scheduler.add_job(scheduled_sync, CronTrigger(hour=22, minute=0))
 
 scheduler.start()
 log("🕰️ Scheduler started (4AM, 10AM, 4PM, 10PM IST)")

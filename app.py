@@ -56,31 +56,27 @@ def airtable_create(table_id, fields):
     r.raise_for_status()
     return r.json()
 
-def map_shipping_status(trendyol_order):
-    status = str(trendyol_order.get("status", "")).lower()
-
+# ---------------- STATUS MAPPERS ----------------
+def map_shipping_status(order):
+    status = str(order.get("status", "")).lower()
     if status in ["shipped", "delivered", "invoiced"]:
         return "Shipped"
-
     return "New"
 
 
-def map_payment_status(trendyol_order):
-    status = str(trendyol_order.get("status", "")).lower()
-
-    if status in ["invoiced", "paid"]:
+def map_payment_status(order):
+    status = str(order.get("status", "")).lower()
+    if status in ["paid", "invoiced"]:
         return "Paid"
-    if status in ["cancelled"]:
+    if status == "cancelled":
         return "Failed"
-    if status in ["refunded"]:
+    if status == "refunded":
         return "Refund"
-
     return "Pending"
 
-
 # ---------------- CUSTOMER ----------------
-def get_or_create_customer(trendyol_customer):
-    formula = f"{{Trendyol Id}}='{trendyol_customer['id']}'"
+def get_or_create_customer(customer):
+    formula = f"{{Trendyol Id}}='{customer['id']}'"
     records = airtable_search(CUSTOMERS_TABLE_ID, formula)
 
     if records:
@@ -89,8 +85,8 @@ def get_or_create_customer(trendyol_customer):
     record = airtable_create(
         CUSTOMERS_TABLE_ID,
         {
-            "Name": trendyol_customer["name"],
-            "Trendyol Id": trendyol_customer["id"]
+            "Name": customer["name"],
+            "Trendyol Id": customer["id"]
         }
     )
     return record["id"]
@@ -104,19 +100,34 @@ def order_exists(order_id):
     return len(records) > 0
 
 
-def create_order(order_id, customer_record_id, order_date, payment_status, shipping_status):
+def create_order(
+    order_id,
+    order_number,
+    customer_record_id,
+    order_date,
+    payment_status,
+    shipping_status,
+    product_name,
+    item_sku,
+    quantity,
+    item_value
+):
     airtable_create(
         ORDERS_TABLE_ID,
         {
-            "Order ID": order_id,
+            "Order ID": order_id,                 # Trendyol internal ID
+            "Order Number": order_number,         # Visible order number
             "Customer": [customer_record_id],
             "Order Date": order_date,
             "Payment Status": payment_status,
             "Shipping Status": shipping_status,
-            "Sales Channel": "Trendyol"
+            "Sales Channel": "Trendyol",
+            "Trendyol Product Name": product_name,
+            "Item SKU": item_sku,
+            "Quantity": quantity,
+            "Item Value": item_value
         }
     )
-
 
 # ---------------- TRENDYOL SYNC ----------------
 def sync_trendyol_orders_job():
@@ -133,58 +144,74 @@ def sync_trendyol_orders_job():
         orders = response.json().get("content", [])
 
         for o in orders:
-            order_id = str(o["orderNumber"])
+            order_id = str(o["id"])                 # internal Trendyol ID
+            order_number = str(o["orderNumber"])   # shown to customer
 
-            # ---- skip if order already exists ----
             if order_exists(order_id):
                 continue
 
-            # ---- customer ----
+            # -------- CUSTOMER --------
             customer_record_id = get_or_create_customer({
                 "id": str(o["customerId"]),
-                "name": f"{o.get('customerFirstName', '')} {o.get('customerLastName', '')}"
+                "name": f"{o.get('customerFirstName','')} {o.get('customerLastName','')}"
             })
 
-            # ---- order date ----
+            # -------- DATE --------
             order_date = datetime.utcfromtimestamp(
                 o["orderDate"] / 1000
             ).strftime("%Y-%m-%d")
 
-            # ---- status mapping ----
-            payment_status = map_payment_status(o)
-            shipping_status = map_shipping_status(o)
+            # -------- PRODUCTS (MULTI LINE) --------
+            product_names = []
+            skus = []
+            quantities = []
+            prices = []
 
-            # ---- create order ----
+            for line in o.get("lines", []):
+                product_names.append(line.get("productName", ""))
+                skus.append(line.get("merchantSku", ""))
+                quantities.append(str(line.get("quantity", 1)))
+                prices.append(str(line.get("price", "")))
+
             create_order(
-                order_id,
-                customer_record_id,
-                order_date,
-                payment_status,
-                shipping_status
+                order_id=order_id,
+                order_number=order_number,
+                customer_record_id=customer_record_id,
+                order_date=order_date,
+                payment_status=map_payment_status(o),
+                shipping_status=map_shipping_status(o),
+                product_name="\n".join(product_names),
+                item_sku="\n".join(skus),
+                quantity="\n".join(quantities),
+                item_value="\n".join(prices)
             )
 
-            print("✅ Order synced:", order_id)
+            print("✅ Order synced:", order_number)
 
         print("🎉 Trendyol sync finished")
 
     except Exception as e:
         print("❌ Sync error:", e)
 
-
-# ---------------- API (MANUAL TRIGGER) ----------------
+# ---------------- API ----------------
 @app.route("/trendyol/sync")
 def manual_sync():
     sync_trendyol_orders_job()
-    return jsonify({"status": "sync triggered"}), 200
+    return jsonify({"status": "sync completed"}), 200
+
+
+@app.route("/health")
+def health():
+    return jsonify({"status": "ok"}), 200
 
 # ---------------- SCHEDULER (IST) ----------------
 ist = pytz.timezone("Asia/Kolkata")
 scheduler = BackgroundScheduler(timezone=ist)
 
 scheduler.add_job(sync_trendyol_orders_job, CronTrigger(hour=9, minute=0))
-scheduler.add_job(sync_trendyol_orders_job, CronTrigger(hour=12, minute=0))
-scheduler.add_job(sync_trendyol_orders_job, CronTrigger(hour=18, minute=0))
-scheduler.add_job(sync_trendyol_orders_job, CronTrigger(hour=0, minute=0))
+scheduler.add_job(sync_trendyol_orders_job, CronTrigger(hour=18, minute=45))
+scheduler.add_job(sync_trendyol_orders_job, CronTrigger(hour=19, minute=0))
+scheduler.add_job(sync_trendyol_orders_job, CronTrigger(hour=19, minute=15))
 
 scheduler.start()
 print("⏰ Scheduler started (IST)")

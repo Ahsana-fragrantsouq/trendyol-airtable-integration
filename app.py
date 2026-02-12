@@ -40,28 +40,30 @@ TRENDYOL_HEADERS = {
 
 # ---------------- AIRTABLE HELPERS ----------------
 def airtable_search(table_id, formula):
-    url = f"{AIRTABLE_URL}/{BASE_ID}/{table_id}"
-    r = requests.get(url, headers=AIRTABLE_HEADERS, params={
-        "filterByFormula": formula
-    })
+    r = requests.get(
+        f"{AIRTABLE_URL}/{BASE_ID}/{table_id}",
+        headers=AIRTABLE_HEADERS,
+        params={"filterByFormula": formula}
+    )
     r.raise_for_status()
     return r.json().get("records", [])
 
 
 def airtable_create(table_id, fields):
-    url = f"{AIRTABLE_URL}/{BASE_ID}/{table_id}"
-    r = requests.post(url, headers=AIRTABLE_HEADERS, json={
-        "fields": fields
-    })
-    r.raise_for_status()
-    return r.json()
+    r = requests.post(
+        f"{AIRTABLE_URL}/{BASE_ID}/{table_id}",
+        headers=AIRTABLE_HEADERS,
+        json={"fields": fields}
+    )
+
+    if r.status_code >= 400:
+        print("❌ Airtable error:", r.text)
+        r.raise_for_status()
 
 # ---------------- STATUS MAPPERS ----------------
 def map_shipping_status(order):
     status = str(order.get("status", "")).lower()
-    if status in ["shipped", "delivered", "invoiced"]:
-        return "Shipped"
-    return "New"
+    return "Shipped" if status in ["shipped", "delivered", "invoiced"] else "New"
 
 
 def map_payment_status(order):
@@ -76,31 +78,37 @@ def map_payment_status(order):
 
 # ---------------- CUSTOMER ----------------
 def get_or_create_customer(customer):
-    formula = f"{{Trendyol Id}}='{customer['id']}'"
-    records = airtable_search(CUSTOMERS_TABLE_ID, formula)
+    records = airtable_search(
+        CUSTOMERS_TABLE_ID,
+        f"{{Trendyol Id}}='{customer['id']}'"
+    )
 
     if records:
         return records[0]["id"]
 
-    record = airtable_create(
-        CUSTOMERS_TABLE_ID,
-        {
-            "Name": customer["name"],
-            "Trendyol Id": customer["id"]
+    r = requests.post(
+        f"{AIRTABLE_URL}/{BASE_ID}/{CUSTOMERS_TABLE_ID}",
+        headers=AIRTABLE_HEADERS,
+        json={
+            "fields": {
+                "Name": customer["name"],
+                "Trendyol Id": customer["id"]
+            }
         }
     )
-    return record["id"]
+    r.raise_for_status()
+    return r.json()["id"]
 
-# ---------------- ORDER ----------------
-def order_exists(order_id):
+# ---------------- DUPLICATE CHECK ----------------
+def order_line_exists(order_id, product_name):
     records = airtable_search(
         ORDERS_TABLE_ID,
-        f"{{Order ID}}='{order_id}'"
+        f"AND({{Order ID}}='{order_id}', {{Trendyol Product Name}}='{product_name}')"
     )
     return len(records) > 0
 
-
-def create_order(
+# ---------------- CREATE ORDER LINE ----------------
+def create_order_line(
     order_id,
     order_number,
     customer_record_id,
@@ -111,49 +119,39 @@ def create_order(
     quantity,
     item_value
 ):
-    payload = {
-        "Order ID": order_id,
-        "Order Number": order_number,
-        "Customer": [customer_record_id],
-        "Order Date": order_date,
-        "Payment Status": payment_status,
-        "Shipping Status": shipping_status,
-        "Sales Channel": "Trendyol",
-        "Trendyol Product Name": product_name,
-        "Quantity": quantity,
-        "Item Value": item_value
-    }
-
-    r = requests.post(
-        f"{AIRTABLE_URL}/{BASE_ID}/{ORDERS_TABLE_ID}",
-        headers=AIRTABLE_HEADERS,
-        json={"fields": payload}
+    airtable_create(
+        ORDERS_TABLE_ID,
+        {
+            "Order ID": order_id,
+            "Order Number": order_number,
+            "Customer": [customer_record_id],
+            "Order Date": order_date,
+            "Payment Status": payment_status,
+            "Shipping Status": shipping_status,
+            "Sales Channel": "Trendyol",
+            "Trendyol Product Name": product_name,
+            "Quantity": str(quantity),
+            "Item Value": str(item_value)
+        }
     )
-
-    if r.status_code >= 400:
-        print("❌ Airtable error:", r.text)
-        r.raise_for_status()
 
 # ---------------- TRENDYOL SYNC ----------------
 def sync_trendyol_orders_job():
     try:
         print("⏰ Trendyol sync started")
 
-        response = requests.get(
+        r = requests.get(
             f"{TRENDYOL_BASE_URL}/integration/order/sellers/{TRENDYOL_SELLER_ID}/orders",
             headers=TRENDYOL_HEADERS,
-            params={"page": 0, "size": 20}
+            params={"page": 0, "size": 50}
         )
-        response.raise_for_status()
+        r.raise_for_status()
 
-        orders = response.json().get("content", [])
+        orders = r.json().get("content", [])
 
         for o in orders:
             order_id = str(o["id"])
             order_number = str(o["orderNumber"])
-
-            if order_exists(order_id):
-                continue
 
             customer_record_id = get_or_create_customer({
                 "id": str(o["customerId"]),
@@ -164,28 +162,31 @@ def sync_trendyol_orders_job():
                 o["orderDate"] / 1000
             ).strftime("%Y-%m-%d")
 
-            product_names = []
-            quantities = []
-            prices = []
+            payment_status = map_payment_status(o)
+            shipping_status = map_shipping_status(o)
 
+            # 🔥 ONE ROW PER PRODUCT
             for line in o.get("lines", []):
-                product_names.append(line.get("productName", ""))
-                quantities.append(str(line.get("quantity", 1)))
-                prices.append(str(line.get("price", "")))
+                product_name = line.get("productName", "")
+                quantity = line.get("quantity", 1)
+                item_value = line.get("price", "")
 
-            create_order(
-                order_id=order_id,
-                order_number=order_number,
-                customer_record_id=customer_record_id,
-                order_date=order_date,
-                payment_status=map_payment_status(o),
-                shipping_status=map_shipping_status(o),
-                product_name="\n".join(product_names),
-                quantity="\n".join(quantities),
-                item_value="\n".join(prices)
-            )
+                if order_line_exists(order_id, product_name):
+                    continue
 
-            print("✅ Order synced:", order_number)
+                create_order_line(
+                    order_id,
+                    order_number,
+                    customer_record_id,
+                    order_date,
+                    payment_status,
+                    shipping_status,
+                    product_name,
+                    quantity,
+                    item_value
+                )
+
+                print(f"✅ Synced {order_number} → {product_name}")
 
         print("🎉 Trendyol sync finished")
 
@@ -198,12 +199,11 @@ def manual_sync():
     sync_trendyol_orders_job()
     return jsonify({"status": "sync completed"}), 200
 
-
 @app.route("/health")
 def health():
     return jsonify({"status": "ok"}), 200
 
-# ---------------- SCHEDULER (IST) ----------------
+# ---------------- SCHEDULER ----------------
 ist = pytz.timezone("Asia/Kolkata")
 scheduler = BackgroundScheduler(timezone=ist)
 

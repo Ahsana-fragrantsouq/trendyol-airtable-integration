@@ -112,22 +112,30 @@ def create_order(
     quantity,
     item_value
 ):
-    airtable_create(
-        ORDERS_TABLE_ID,
-        {
-            "Order ID": order_id,                 # Trendyol internal ID
-            "Order Number": order_number,         # Visible order number
-            "Customer": [customer_record_id],
-            "Order Date": order_date,
-            "Payment Status": payment_status,
-            "Shipping Status": shipping_status,
-            "Sales Channel": "Trendyol",
-            "Trendyol Product Name": product_name,
-            "Item SKU": item_sku,
-            "Quantity": quantity,
-            "Item Value": item_value
-        }
+    payload = {
+        "Order ID": order_id,
+        "Order Number": order_number,
+        "Customer": [customer_record_id],
+        "Order Date": order_date,
+        "Payment Status": payment_status,
+        "Shipping Status": shipping_status,
+        "Sales Channel": "Trendyol",
+        "Trendyol Product Name": product_name,
+        "Item SKU": item_sku,
+        "Quantity": quantity,
+        "Item Value": item_value
+    }
+
+    r = requests.post(
+        f"{AIRTABLE_URL}/{BASE_ID}/{ORDERS_TABLE_ID}",
+        headers=AIRTABLE_HEADERS,
+        json={"fields": payload}
     )
+
+    if r.status_code >= 400:
+        print("❌ Airtable error:", r.text)
+        r.raise_for_status()
+
 
 # ---------------- TRENDYOL SYNC ----------------
 def sync_trendyol_orders_job():

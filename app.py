@@ -212,7 +212,7 @@ def health():
     return jsonify({"status": "ok"}), 200
 
 # ======================================================
-# SCHEDULER (FLASK 3 SAFE)
+# SCHEDULER (START ONLY ONCE)
 # ======================================================
 scheduler_started = False
 ist = pytz.timezone("Asia/Kolkata")
@@ -223,7 +223,7 @@ scheduler.add_job(sync_trendyol_orders_job, CronTrigger(hour=12, minute=0), max_
 scheduler.add_job(sync_trendyol_orders_job, CronTrigger(hour=18, minute=0), max_instances=1)
 scheduler.add_job(sync_trendyol_orders_job, CronTrigger(hour=0, minute=0), max_instances=1)
 
-@app.before_request
+@app.before_first_request
 def start_scheduler_once():
     global scheduler_started
     if not scheduler_started:

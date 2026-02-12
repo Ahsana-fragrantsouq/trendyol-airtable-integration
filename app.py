@@ -8,9 +8,14 @@ from flask import Flask, jsonify, request
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 
+# ======================================================
+# APP
+# ======================================================
 app = Flask(__name__)
 
-# ---------------- CONFIG ----------------
+# ======================================================
+# CONFIG
+# ======================================================
 AIRTABLE_TOKEN = os.getenv("AIRTABLE_TOKEN")
 BASE_ID = os.getenv("BASE_ID")
 CUSTOMERS_TABLE_ID = os.getenv("CUSTOMERS_TABLE")
@@ -22,8 +27,11 @@ TRENDYOL_API_SECRET = os.getenv("API_SECRET")
 
 AIRTABLE_URL = "https://api.airtable.com/v0"
 TRENDYOL_BASE_URL = "https://apigw.trendyol.com"
+REQUEST_TIMEOUT = 15
 
-# ---------------- HEADERS ----------------
+# ======================================================
+# HEADERS
+# ======================================================
 AIRTABLE_HEADERS = {
     "Authorization": f"Bearer {AIRTABLE_TOKEN}",
     "Content-Type": "application/json"
@@ -39,9 +47,9 @@ TRENDYOL_HEADERS = {
     "Content-Type": "application/json"
 }
 
-REQUEST_TIMEOUT = 15  # seconds
-
-# ---------------- AIRTABLE HELPERS ----------------
+# ======================================================
+# AIRTABLE HELPERS
+# ======================================================
 def airtable_search(table_id, formula):
     r = requests.get(
         f"{AIRTABLE_URL}/{BASE_ID}/{table_id}",
@@ -63,20 +71,30 @@ def airtable_create(table_id, fields):
         print("❌ Airtable error:", r.text)
         r.raise_for_status()
 
-# ---------------- STATUS ----------------
+# ======================================================
+# STATUS MAPPERS
+# ======================================================
 def map_shipping_status(order):
-    return "Shipped" if order.get("status","").lower() in ["shipped","delivered","invoiced"] else "New"
+    return "Shipped" if order.get("status", "").lower() in ["shipped", "delivered", "invoiced"] else "New"
 
 def map_payment_status(order):
-    s = order.get("status","").lower()
-    if s in ["paid","invoiced"]: return "Paid"
-    if s == "cancelled": return "Failed"
-    if s == "refunded": return "Refund"
+    s = order.get("status", "").lower()
+    if s in ["paid", "invoiced"]:
+        return "Paid"
+    if s == "cancelled":
+        return "Failed"
+    if s == "refunded":
+        return "Refund"
     return "Pending"
 
-# ---------------- CUSTOMER ----------------
+# ======================================================
+# CUSTOMER
+# ======================================================
 def get_or_create_customer(c):
-    records = airtable_search(CUSTOMERS_TABLE_ID, f"{{Trendyol Id}}='{c['id']}'")
+    records = airtable_search(
+        CUSTOMERS_TABLE_ID,
+        f"{{Trendyol Id}}='{c['id']}'"
+    )
     if records:
         return records[0]["id"]
 
@@ -89,7 +107,9 @@ def get_or_create_customer(c):
     r.raise_for_status()
     return r.json()["id"]
 
-# ---------------- DUPLICATE CHECK ----------------
+# ======================================================
+# DUPLICATE CHECK
+# ======================================================
 def order_line_exists(order_id, product_name):
     records = airtable_search(
         ORDERS_TABLE_ID,
@@ -97,7 +117,9 @@ def order_line_exists(order_id, product_name):
     )
     return bool(records)
 
-# ---------------- CREATE ROW ----------------
+# ======================================================
+# CREATE ORDER LINE
+# ======================================================
 def create_order_line(order_id, order_number, customer_id, date, pay, ship, product, qty, price):
     airtable_create(
         ORDERS_TABLE_ID,
@@ -115,7 +137,9 @@ def create_order_line(order_id, order_number, customer_id, date, pay, ship, prod
         }
     )
 
-# ---------------- MAIN SYNC ----------------
+# ======================================================
+# MAIN SYNC JOB
+# ======================================================
 def sync_trendyol_orders_job():
     print("⏰ Trendyol sync started")
 
@@ -138,19 +162,33 @@ def sync_trendyol_orders_job():
                 "name": f"{o.get('customerFirstName','')} {o.get('customerLastName','')}"
             })
 
-            order_date = datetime.utcfromtimestamp(o["orderDate"]/1000).strftime("%Y-%m-%d")
+            order_date = datetime.utcfromtimestamp(
+                o["orderDate"] / 1000
+            ).strftime("%Y-%m-%d")
+
             pay = map_payment_status(o)
             ship = map_shipping_status(o)
 
             for line in o.get("lines", []):
-                product = line.get("productName","")
-                qty = line.get("quantity",1)
-                price = line.get("price","")
+                product = line.get("productName", "")
+                qty = line.get("quantity", 1)
+                price = line.get("price", "")
 
                 if order_line_exists(order_id, product):
                     continue
 
-                create_order_line(order_id, order_number, customer_id, order_date, pay, ship, product, qty, price)
+                create_order_line(
+                    order_id,
+                    order_number,
+                    customer_id,
+                    order_date,
+                    pay,
+                    ship,
+                    product,
+                    qty,
+                    price
+                )
+
                 print(f"✅ Synced {order_number} → {product}")
 
     except Exception as e:
@@ -158,32 +196,43 @@ def sync_trendyol_orders_job():
 
     print("🎉 Trendyol sync finished")
 
-# ---------------- API ----------------
-@app.route("/trendyol/sync", methods=["GET"])
+# ======================================================
+# API ROUTES
+# ======================================================
+@app.route("/trendyol/sync", methods=["POST", "HEAD"])
 def manual_sync():
     if request.method == "HEAD":
         return "", 200
 
-    # 🚀 run async so Gunicorn never blocks
     threading.Thread(target=sync_trendyol_orders_job).start()
     return jsonify({"status": "sync started"}), 202
 
-@app.route("/health")
+@app.route("/health", methods=["GET"])
 def health():
     return jsonify({"status": "ok"}), 200
 
-# ---------------- SCHEDULER ----------------
+# ======================================================
+# SCHEDULER (START ONLY ONCE)
+# ======================================================
+scheduler_started = False
 ist = pytz.timezone("Asia/Kolkata")
 scheduler = BackgroundScheduler(timezone=ist)
 
-scheduler.add_job(sync_trendyol_orders_job, CronTrigger(hour=9, minute=0))
-scheduler.add_job(sync_trendyol_orders_job, CronTrigger(hour=12, minute=0))
-scheduler.add_job(sync_trendyol_orders_job, CronTrigger(hour=18, minute=0))
-scheduler.add_job(sync_trendyol_orders_job, CronTrigger(hour=0, minute=0))
+scheduler.add_job(sync_trendyol_orders_job, CronTrigger(hour=9, minute=0), max_instances=1)
+scheduler.add_job(sync_trendyol_orders_job, CronTrigger(hour=12, minute=0), max_instances=1)
+scheduler.add_job(sync_trendyol_orders_job, CronTrigger(hour=18, minute=0), max_instances=1)
+scheduler.add_job(sync_trendyol_orders_job, CronTrigger(hour=0, minute=0), max_instances=1)
 
-scheduler.start()
-print("⏰ Scheduler started (IST)")
+@app.before_first_request
+def start_scheduler_once():
+    global scheduler_started
+    if not scheduler_started:
+        scheduler.start()
+        scheduler_started = True
+        print("⏰ Scheduler started (IST)")
 
-# ---------------- RUN ----------------
+# ======================================================
+# RUN (LOCAL ONLY)
+# ======================================================
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000)

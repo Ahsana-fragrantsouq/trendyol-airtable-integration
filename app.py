@@ -114,7 +114,7 @@ def create_order(
     payload = {
         "Order ID": order_id,
         "Order Number": order_number,
-        "Customer": [customer_record_id],   # ✅ linked record
+        "Customer": [customer_record_id],
         "Order Date": order_date,
         "Payment Status": payment_status,
         "Shipping Status": shipping_status,
@@ -134,8 +134,6 @@ def create_order(
         print("❌ Airtable error:", r.text)
         r.raise_for_status()
 
-
-
 # ---------------- TRENDYOL SYNC ----------------
 def sync_trendyol_orders_job():
     try:
@@ -151,32 +149,27 @@ def sync_trendyol_orders_job():
         orders = response.json().get("content", [])
 
         for o in orders:
-            order_id = str(o["id"])                 # internal Trendyol ID
-            order_number = str(o["orderNumber"])   # shown to customer
+            order_id = str(o["id"])
+            order_number = str(o["orderNumber"])
 
             if order_exists(order_id):
                 continue
 
-            # -------- CUSTOMER --------
             customer_record_id = get_or_create_customer({
                 "id": str(o["customerId"]),
                 "name": f"{o.get('customerFirstName','')} {o.get('customerLastName','')}"
             })
 
-            # -------- DATE --------
             order_date = datetime.utcfromtimestamp(
                 o["orderDate"] / 1000
             ).strftime("%Y-%m-%d")
 
-            # -------- PRODUCTS (MULTI LINE) --------
             product_names = []
-            skus = []
             quantities = []
             prices = []
 
             for line in o.get("lines", []):
                 product_names.append(line.get("productName", ""))
-                skus.append(line.get("merchantSku", ""))
                 quantities.append(str(line.get("quantity", 1)))
                 prices.append(str(line.get("price", "")))
 
@@ -188,7 +181,6 @@ def sync_trendyol_orders_job():
                 payment_status=map_payment_status(o),
                 shipping_status=map_shipping_status(o),
                 product_name="\n".join(product_names),
-                item_sku="\n".join(skus),
                 quantity="\n".join(quantities),
                 item_value="\n".join(prices)
             )

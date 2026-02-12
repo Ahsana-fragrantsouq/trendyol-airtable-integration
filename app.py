@@ -108,20 +108,18 @@ def create_order(
     payment_status,
     shipping_status,
     product_name,
-    item_sku,
     quantity,
     item_value
 ):
     payload = {
         "Order ID": order_id,
         "Order Number": order_number,
-        "Customer": [customer_record_id],
+        "Customer": [customer_record_id],   # ✅ linked record
         "Order Date": order_date,
         "Payment Status": payment_status,
         "Shipping Status": shipping_status,
         "Sales Channel": "Trendyol",
         "Trendyol Product Name": product_name,
-        "Item SKU": item_sku,
         "Quantity": quantity,
         "Item Value": item_value
     }
@@ -135,6 +133,7 @@ def create_order(
     if r.status_code >= 400:
         print("❌ Airtable error:", r.text)
         r.raise_for_status()
+
 
 
 # ---------------- TRENDYOL SYNC ----------------

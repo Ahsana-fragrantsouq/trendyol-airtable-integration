@@ -207,20 +207,19 @@ def cron_sync():
     if request.method == "HEAD":
         return "", 200
 
-    # 🔍 DEBUG LOGS (YOU ASKED FOR THIS)
-    print("Received X-Cron-Secret:", request.headers.get("X-Cron-Secret"))
-    print("Expected CRON_SECRET:", CRON_SECRET)
+    received_secret = (request.headers.get("X-Cron-Secret") or "").strip()
+    expected_secret = (CRON_SECRET or "").strip()
 
-    if request.headers.get("X-Cron-Secret") != CRON_SECRET:
+    print("Received X-Cron-Secret:", repr(received_secret))
+    print("Expected CRON_SECRET:", repr(expected_secret))
+
+    if received_secret != expected_secret:
         print("❌ Unauthorized cron request")
         return "Unauthorized", 401
 
     threading.Thread(target=sync_trendyol_orders_job).start()
     return jsonify({"status": "sync started"}), 202
 
-@app.route("/health", methods=["GET"])
-def health():
-    return jsonify({"status": "ok"}), 200
 
 # ======================================================
 # LOCAL RUN

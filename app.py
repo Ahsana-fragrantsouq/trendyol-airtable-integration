@@ -22,7 +22,7 @@ TRENDYOL_SELLER_ID = os.getenv("SELLER_ID")
 TRENDYOL_API_KEY = os.getenv("API_KEY")
 TRENDYOL_API_SECRET = os.getenv("API_SECRET")
 
-CRON_SECRET = os.getenv("CRON_SECRET")
+CRON_SECRET = os.getenv("CRON_SECRET")  # MUST be set in Render
 
 AIRTABLE_URL = "https://api.airtable.com/v0"
 TRENDYOL_BASE_URL = "https://apigw.trendyol.com"
@@ -199,10 +199,15 @@ def sync_trendyol_orders_job():
     print("🎉 Trendyol sync finished")
 
 # ======================================================
-# API ROUTES (SECURED)
+# API ROUTES (CRON SAFE)
 # ======================================================
-@app.route("/trendyol/sync", methods=["POST"])
+@app.route("/trendyol/sync", methods=["POST", "HEAD"])
 def cron_sync():
+    # Allow cron-job.org HEAD checks
+    if request.method == "HEAD":
+        return "", 200
+
+    # Secret validation
     if request.headers.get("X-Cron-Secret") != CRON_SECRET:
         return "Unauthorized", 401
 
@@ -214,7 +219,7 @@ def health():
     return jsonify({"status": "ok"}), 200
 
 # ======================================================
-# LOCAL RUN ONLY
+# LOCAL RUN
 # ======================================================
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000)

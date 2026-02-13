@@ -26,7 +26,7 @@ CRON_SECRET = os.getenv("CRON_SECRET")  # MUST be set in Render
 
 AIRTABLE_URL = "https://api.airtable.com/v0"
 TRENDYOL_BASE_URL = "https://apigw.trendyol.com"
-REQUEST_TIMEOUT = 20
+REQUEST_TIMEOUT = 25
 
 # ======================================================
 # HEADERS
@@ -207,8 +207,12 @@ def cron_sync():
     if request.method == "HEAD":
         return "", 200
 
-    # Secret validation
+    # 🔍 DEBUG LOGS (YOU ASKED FOR THIS)
+    print("Received X-Cron-Secret:", request.headers.get("X-Cron-Secret"))
+    print("Expected CRON_SECRET:", CRON_SECRET)
+
     if request.headers.get("X-Cron-Secret") != CRON_SECRET:
+        print("❌ Unauthorized cron request")
         return "Unauthorized", 401
 
     threading.Thread(target=sync_trendyol_orders_job).start()

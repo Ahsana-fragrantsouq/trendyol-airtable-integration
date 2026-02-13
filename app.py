@@ -22,11 +22,11 @@ TRENDYOL_SELLER_ID = os.getenv("SELLER_ID")
 TRENDYOL_API_KEY = os.getenv("API_KEY")
 TRENDYOL_API_SECRET = os.getenv("API_SECRET")
 
-CRON_SECRET = os.getenv("CRON_SECRET")  # MUST be set in Render
+CRON_SECRET = os.getenv("CRON_SECRET")  # MUST be set in Render and cron job
 
 AIRTABLE_URL = "https://api.airtable.com/v0"
 TRENDYOL_BASE_URL = "https://apigw.trendyol.com"
-REQUEST_TIMEOUT = 25
+REQUEST_TIMEOUT = 30
 
 # ======================================================
 # HEADERS

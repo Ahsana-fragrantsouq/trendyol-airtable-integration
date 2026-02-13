@@ -1,12 +1,9 @@
 import os
 import base64
 import requests
-import pytz
 import threading
 from datetime import datetime
 from flask import Flask, jsonify, request
-from apscheduler.schedulers.background import BackgroundScheduler
-from apscheduler.triggers.cron import CronTrigger
 
 # ======================================================
 # APP
@@ -25,9 +22,11 @@ TRENDYOL_SELLER_ID = os.getenv("SELLER_ID")
 TRENDYOL_API_KEY = os.getenv("API_KEY")
 TRENDYOL_API_SECRET = os.getenv("API_SECRET")
 
+CRON_SECRET = os.getenv("CRON_SECRET")
+
 AIRTABLE_URL = "https://api.airtable.com/v0"
 TRENDYOL_BASE_URL = "https://apigw.trendyol.com"
-REQUEST_TIMEOUT = 15
+REQUEST_TIMEOUT = 20
 
 # ======================================================
 # HEADERS
@@ -75,7 +74,9 @@ def airtable_create(table_id, fields):
 # STATUS MAPPERS
 # ======================================================
 def map_shipping_status(order):
-    return "Shipped" if order.get("status", "").lower() in ["shipped", "delivered", "invoiced"] else "New"
+    return "Shipped" if order.get("status", "").lower() in [
+        "shipped", "delivered", "invoiced"
+    ] else "New"
 
 def map_payment_status(order):
     s = order.get("status", "").lower()
@@ -138,7 +139,7 @@ def create_order_line(order_id, order_number, customer_id, date, pay, ship, prod
     )
 
 # ======================================================
-# MAIN SYNC JOB
+# MAIN SYNC LOGIC
 # ======================================================
 def sync_trendyol_orders_job():
     print("⏰ Trendyol sync started")
@@ -147,10 +148,11 @@ def sync_trendyol_orders_job():
         r = requests.get(
             f"{TRENDYOL_BASE_URL}/integration/order/sellers/{TRENDYOL_SELLER_ID}/orders",
             headers=TRENDYOL_HEADERS,
-            params={"page": 0, "size": 20},
+            params={"page": 0, "size": 50},
             timeout=REQUEST_TIMEOUT
         )
         r.raise_for_status()
+
         orders = r.json().get("content", [])
 
         for o in orders:
@@ -197,12 +199,12 @@ def sync_trendyol_orders_job():
     print("🎉 Trendyol sync finished")
 
 # ======================================================
-# API ROUTES
+# API ROUTES (SECURED)
 # ======================================================
-@app.route("/trendyol/sync", methods=["POST", "HEAD"])
-def manual_sync():
-    if request.method == "HEAD":
-        return "", 200
+@app.route("/trendyol/sync", methods=["POST"])
+def cron_sync():
+    if request.headers.get("X-Cron-Secret") != CRON_SECRET:
+        return "Unauthorized", 401
 
     threading.Thread(target=sync_trendyol_orders_job).start()
     return jsonify({"status": "sync started"}), 202
@@ -212,27 +214,7 @@ def health():
     return jsonify({"status": "ok"}), 200
 
 # ======================================================
-# SCHEDULER (FLASK 3 SAFE)
-# ======================================================
-scheduler_started = False
-ist = pytz.timezone("Asia/Kolkata")
-scheduler = BackgroundScheduler(timezone=ist)
-
-scheduler.add_job(sync_trendyol_orders_job, CronTrigger(hour=9, minute=0), max_instances=1)
-scheduler.add_job(sync_trendyol_orders_job, CronTrigger(hour=12, minute=0), max_instances=1)
-scheduler.add_job(sync_trendyol_orders_job, CronTrigger(hour=18, minute=0), max_instances=1)
-scheduler.add_job(sync_trendyol_orders_job, CronTrigger(hour=0, minute=0), max_instances=1)
-
-@app.before_request
-def start_scheduler_once():
-    global scheduler_started
-    if not scheduler_started:
-        scheduler.start()
-        scheduler_started = True
-        print("⏰ Scheduler started (IST)")
-
-# ======================================================
-# RUN (LOCAL ONLY)
+# LOCAL RUN ONLY
 # ======================================================
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000)

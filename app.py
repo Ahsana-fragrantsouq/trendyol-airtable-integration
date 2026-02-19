@@ -22,7 +22,7 @@ TRENDYOL_SELLER_ID = os.getenv("SELLER_ID")
 TRENDYOL_API_KEY = os.getenv("API_KEY")
 TRENDYOL_API_SECRET = os.getenv("API_SECRET")
 
-CRON_SECRET = os.getenv("CRON_SECRET")  # MUST be set in Render and cron job
+CRON_SECRET = os.getenv("CRON_SECRET")  # must match cron header
 
 AIRTABLE_URL = "https://api.airtable.com/v0"
 TRENDYOL_BASE_URL = "https://apigw.trendyol.com"
@@ -43,8 +43,14 @@ basic_token = base64.b64encode(
 TRENDYOL_HEADERS = {
     "Authorization": f"Basic {basic_token}",
     "User-Agent": "TrendyolAirtableSync/1.0",
-    "Content-Type": "application/json"
+    "Content-Type": "application/json",
+    "storeFrontCode": "AE"  # 🔴 REQUIRED
 }
+
+# ======================================================
+# GLOBAL LOCK (prevents double run)
+# ======================================================
+sync_lock = threading.Lock()
 
 # ======================================================
 # AIRTABLE HELPERS
@@ -142,6 +148,10 @@ def create_order_line(order_id, order_number, customer_id, date, pay, ship, prod
 # MAIN SYNC LOGIC
 # ======================================================
 def sync_trendyol_orders_job():
+    if not sync_lock.acquire(blocking=False):
+        print("⏳ Sync already running — skipped")
+        return
+
     print("⏰ Trendyol sync started")
 
     try:
@@ -196,33 +206,30 @@ def sync_trendyol_orders_job():
     except Exception as e:
         print("❌ Sync error:", e)
 
-    print("🎉 Trendyol sync finished")
+    finally:
+        sync_lock.release()
+        print("🎉 Trendyol sync finished")
 
 # ======================================================
-# API ROUTES (CRON SAFE)
+# CRON ENDPOINT
 # ======================================================
-@app.route("/trendyol/sync", methods=["POST", "HEAD"])
+@app.route("/trendyol/sync", methods=["GET", "POST", "HEAD"])
 def cron_sync():
-    # Allow cron-job.org HEAD checks
     if request.method == "HEAD":
         return "", 200
 
-    received_secret = (request.headers.get("X-Cron-Secret") or "").strip()
-    expected_secret = (CRON_SECRET or "").strip()
+    received = (request.headers.get("X-Cron-Secret") or "").strip()
+    expected = (CRON_SECRET or "").strip()
 
-    print("Received X-Cron-Secret:", repr(received_secret))
-    print("Expected CRON_SECRET:", repr(expected_secret))
-
-    if received_secret != expected_secret:
+    if received != expected:
         print("❌ Unauthorized cron request")
         return "Unauthorized", 401
 
     threading.Thread(target=sync_trendyol_orders_job).start()
     return jsonify({"status": "sync started"}), 202
 
-
 # ======================================================
-# LOCAL RUN
+# RUN
 # ======================================================
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000)

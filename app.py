@@ -228,14 +228,19 @@ def sync_trendyol_orders_job():
 # ======================================================
 @app.route("/update", methods=["GET"])
 def update_from_browser():
+    secret = request.headers.get("X-Update-Secret")
+    if secret != os.getenv("UPDATE_SECRET"):
+        return jsonify({"error": "Unauthorized"}), 401
+
     if sync_lock.locked():
         return jsonify({"status": "Sync already running"}), 200
 
-    threading.Thread(target=sync_trendyol_orders_job, daemon=True).start()
+    threading.Thread(
+        target=sync_trendyol_orders_job,
+        daemon=True
+    ).start()
 
-    return jsonify({
-        "status": "Trendyol sync started in background"
-    }), 202
+    return jsonify({"status": "Trendyol sync started in background"}), 202
 
 # ======================================================
 # RUN (RENDER / LOCAL)

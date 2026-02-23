@@ -228,15 +228,14 @@ def sync_trendyol_orders_job():
 # ======================================================
 @app.route("/update", methods=["GET"])
 def update_from_browser():
-    try:
-        sync_trendyol_orders_job()
-        return jsonify({"status": "Trendyol orders updated in Airtable"}), 200
-    except Exception as e:
-        print("❌ UPDATE ENDPOINT ERROR:", e)
-        return jsonify({
-            "error": "Update failed",
-            "details": str(e)
-        }), 500
+    if sync_lock.locked():
+        return jsonify({"status": "Sync already running"}), 200
+
+    threading.Thread(target=sync_trendyol_orders_job, daemon=True).start()
+
+    return jsonify({
+        "status": "Trendyol sync started in background"
+    }), 202
 
 # ======================================================
 # RUN (RENDER / LOCAL)

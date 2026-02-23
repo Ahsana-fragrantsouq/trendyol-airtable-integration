@@ -3,13 +3,7 @@ import base64
 import requests
 import threading
 from datetime import datetime
-from dotenv import load_dotenv
 from flask import Flask, jsonify
-
-# ======================================================
-# LOAD ENV (KEEPING – as requested)
-# ======================================================
-load_dotenv()
 
 # ======================================================
 # CONFIG

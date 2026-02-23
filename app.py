@@ -7,7 +7,7 @@ from dotenv import load_dotenv
 from flask import Flask, jsonify
 
 # ======================================================
-# LOAD ENV
+# LOAD ENV (KEEPING – as requested)
 # ======================================================
 load_dotenv()
 
@@ -18,6 +18,7 @@ AIRTABLE_TOKEN = os.getenv("AIRTABLE_TOKEN")
 BASE_ID = os.getenv("BASE_ID")
 CUSTOMERS_TABLE_ID = os.getenv("CUSTOMERS_TABLE")
 ORDERS_TABLE_ID = os.getenv("ORDERS_TABLE")
+FRENCH_INVENTORIES_TABLE_ID = os.getenv("FRENCH_INVENTORIES_TABLE")
 
 TRENDYOL_SELLER_ID = os.getenv("SELLER_ID")
 TRENDYOL_API_KEY = os.getenv("API_KEY")
@@ -31,6 +32,19 @@ REQUEST_TIMEOUT = 30
 # FLASK APP
 # ======================================================
 app = Flask(__name__)
+
+# ======================================================
+# ENV CHECK
+# ======================================================
+print("🔐 ENV CHECK:")
+print("AIRTABLE_TOKEN:", bool(AIRTABLE_TOKEN))
+print("BASE_ID:", bool(BASE_ID))
+print("CUSTOMERS_TABLE:", bool(CUSTOMERS_TABLE_ID))
+print("ORDERS_TABLE:", bool(ORDERS_TABLE_ID))
+print("SELLER_ID:", bool(TRENDYOL_SELLER_ID))
+print("API_KEY:", bool(TRENDYOL_API_KEY))
+print("API_SECRET:", bool(TRENDYOL_API_SECRET))
+print("--------------------------------------------------")
 
 # ======================================================
 # HEADERS
@@ -52,7 +66,7 @@ TRENDYOL_HEADERS = {
 }
 
 # ======================================================
-# LOCK
+# GLOBAL LOCK
 # ======================================================
 sync_lock = threading.Lock()
 
@@ -76,17 +90,9 @@ def airtable_create(table_id, fields):
         json={"fields": fields},
         timeout=REQUEST_TIMEOUT
     )
-    r.raise_for_status()
-    return r.json()
-
-def airtable_update(table_id, record_id, fields):
-    r = requests.patch(
-        f"{AIRTABLE_URL}/{BASE_ID}/{table_id}/{record_id}",
-        headers=AIRTABLE_HEADERS,
-        json={"fields": fields},
-        timeout=REQUEST_TIMEOUT
-    )
-    r.raise_for_status()
+    if r.status_code >= 400:
+        print("❌ Airtable error:", r.text)
+        r.raise_for_status()
 
 # ======================================================
 # STATUS MAPPERS
@@ -107,40 +113,27 @@ def map_payment_status(order):
     return "Pending"
 
 # ======================================================
-# CUSTOMER SYNC
+# CUSTOMER
 # ======================================================
-def get_or_create_customer(customer):
-    """
-    customer = { id, name }
-    """
+def get_or_create_customer(c):
     records = airtable_search(
         CUSTOMERS_TABLE_ID,
-        f"{{Trendyol Id}}='{customer['id']}'"
+        f"{{Trendyol Id}}='{c['id']}'"
     )
-
-    # Exists → update name
     if records:
-        record_id = records[0]["id"]
-        airtable_update(
-            CUSTOMERS_TABLE_ID,
-            record_id,
-            {"Name": customer["name"]}
-        )
-        return record_id
+        return records[0]["id"]
 
-    # New customer
-    res = airtable_create(
-        CUSTOMERS_TABLE_ID,
-        {
-            "Name": customer["name"],
-            "Trendyol Id": customer["id"],
-            "Acquired sales channel": "Trendyol"
-        }
+    r = requests.post(
+        f"{AIRTABLE_URL}/{BASE_ID}/{CUSTOMERS_TABLE_ID}",
+        headers=AIRTABLE_HEADERS,
+        json={"fields": {"Name": c["name"], "Trendyol Id": c["id"]}},
+        timeout=REQUEST_TIMEOUT
     )
-    return res["id"]
+    r.raise_for_status()
+    return r.json()["id"]
 
 # ======================================================
-# ORDER HELPERS
+# DUPLICATE CHECK
 # ======================================================
 def order_line_exists(order_id, product_name):
     records = airtable_search(
@@ -149,42 +142,35 @@ def order_line_exists(order_id, product_name):
     )
     return bool(records)
 
-def create_order_line(order, line, customer_record_id):
-    order_id = str(order["id"])
-
-    if order_line_exists(order_id, line["productName"]):
-        return
-
-    order_date = datetime.utcfromtimestamp(
-        order["orderDate"] / 1000
-    ).strftime("%Y-%m-%d")
-
+# ======================================================
+# CREATE ORDER LINE
+# ======================================================
+def create_order_line(order_id, order_number, customer_id, date, pay, ship, product, qty, price):
     airtable_create(
         ORDERS_TABLE_ID,
         {
             "Order ID": order_id,
-            "Order Number": str(order["orderNumber"]),
-            "Customer": [customer_record_id],
-            "Order Date": order_date,
-            "Trendyol Product Name": line["productName"],
-            "Quantity": str(line.get("quantity", 1)),
-            "Item Value": str(line.get("price", "")),
-            "Payment Status": map_payment_status(order),
-            "Shipping Status": map_shipping_status(order),
-            "Sales Channel": "Trendyol"
+            "Order Number": order_number,
+            "Customer": [customer_id],
+            "Order Date": date,
+            "Payment Status": pay,
+            "Shipping Status": ship,
+            "Sales Channel": "Trendyol",
+            "Trendyol Product Name": product,
+            "Quantity": str(qty),
+            "Item Value": str(price)
         }
     )
 
-    print(f"✅ Order synced → {order_id} | {line['productName']}")
-
 # ======================================================
-# 🔥 MAIN UPDATE FUNCTION (WHAT YOU ASKED)
+# MAIN UPDATE LOGIC (REUSED)
 # ======================================================
-def update_trendyol_to_airtable():
+def sync_trendyol_orders_job():
     if not sync_lock.acquire(blocking=False):
+        print("⏳ Sync already running — skipped")
         return
 
-    print("🔄 Updating Trendyol → Airtable")
+    print("⏰ Trendyol update started")
 
     try:
         r = requests.get(
@@ -198,29 +184,58 @@ def update_trendyol_to_airtable():
         orders = r.json().get("content", [])
         print(f"📦 Orders fetched: {len(orders)}")
 
-        for order in orders:
-            customer_record_id = get_or_create_customer({
-                "id": str(order["customerId"]),
-                "name": f"{order.get('customerFirstName','')} {order.get('customerLastName','')}"
+        for o in orders:
+            order_id = str(o["id"])
+            order_number = str(o["orderNumber"])
+
+            customer_id = get_or_create_customer({
+                "id": str(o["customerId"]),
+                "name": f"{o.get('customerFirstName','')} {o.get('customerLastName','')}"
             })
 
-            for line in order.get("lines", []):
-                create_order_line(order, line, customer_record_id)
+            order_date = datetime.utcfromtimestamp(
+                o["orderDate"] / 1000
+            ).strftime("%Y-%m-%d")
+
+            pay = map_payment_status(o)
+            ship = map_shipping_status(o)
+
+            for line in o.get("lines", []):
+                product = line.get("productName", "")
+                qty = line.get("quantity", 1)
+                price = line.get("price", "")
+
+                if order_line_exists(order_id, product):
+                    continue
+
+                create_order_line(
+                    order_id,
+                    order_number,
+                    customer_id,
+                    order_date,
+                    pay,
+                    ship,
+                    product,
+                    qty,
+                    price
+                )
+
+                print(f"✅ Synced {order_number} → {product}")
 
     except Exception as e:
         print("❌ Update error:", e)
 
     finally:
         sync_lock.release()
-        print("🎉 Update finished")
+        print("🎉 Trendyol update finished")
 
 # ======================================================
 # BROWSER TRIGGER
 # ======================================================
 @app.route("/update", methods=["GET"])
-def manual_update():
-    update_trendyol_to_airtable()
-    return jsonify({"status": "Trendyol orders synced to Airtable"}), 200
+def update_from_browser():
+    sync_trendyol_orders_job()
+    return jsonify({"status": "Trendyol orders updated in Airtable"}), 200
 
 # ======================================================
 # RUN (RENDER / LOCAL)

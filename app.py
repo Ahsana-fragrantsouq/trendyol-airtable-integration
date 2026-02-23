@@ -3,12 +3,13 @@ import base64
 import requests
 import threading
 from datetime import datetime
-from flask import Flask, jsonify, request
+from dotenv import load_dotenv
+from flask import Flask, jsonify
 
 # ======================================================
-# APP
+# LOAD ENV
 # ======================================================
-app = Flask(__name__)
+load_dotenv()
 
 # ======================================================
 # CONFIG
@@ -22,11 +23,14 @@ TRENDYOL_SELLER_ID = os.getenv("SELLER_ID")
 TRENDYOL_API_KEY = os.getenv("API_KEY")
 TRENDYOL_API_SECRET = os.getenv("API_SECRET")
 
-CRON_SECRET = os.getenv("CRON_SECRET")  # must match cron header
-
 AIRTABLE_URL = "https://api.airtable.com/v0"
 TRENDYOL_BASE_URL = "https://apigw.trendyol.com"
 REQUEST_TIMEOUT = 30
+
+# ======================================================
+# FLASK APP
+# ======================================================
+app = Flask(__name__)
 
 # ======================================================
 # HEADERS
@@ -44,11 +48,11 @@ TRENDYOL_HEADERS = {
     "Authorization": f"Basic {basic_token}",
     "User-Agent": "TrendyolAirtableSync/1.0",
     "Content-Type": "application/json",
-    "storeFrontCode": "AE"  # 🔴 REQUIRED
+    "storeFrontCode": "AE"
 }
 
 # ======================================================
-# GLOBAL LOCK (prevents double run)
+# LOCK
 # ======================================================
 sync_lock = threading.Lock()
 
@@ -72,9 +76,17 @@ def airtable_create(table_id, fields):
         json={"fields": fields},
         timeout=REQUEST_TIMEOUT
     )
-    if r.status_code >= 400:
-        print("❌ Airtable error:", r.text)
-        r.raise_for_status()
+    r.raise_for_status()
+    return r.json()
+
+def airtable_update(table_id, record_id, fields):
+    r = requests.patch(
+        f"{AIRTABLE_URL}/{BASE_ID}/{table_id}/{record_id}",
+        headers=AIRTABLE_HEADERS,
+        json={"fields": fields},
+        timeout=REQUEST_TIMEOUT
+    )
+    r.raise_for_status()
 
 # ======================================================
 # STATUS MAPPERS
@@ -95,27 +107,40 @@ def map_payment_status(order):
     return "Pending"
 
 # ======================================================
-# CUSTOMER
+# CUSTOMER SYNC
 # ======================================================
-def get_or_create_customer(c):
+def get_or_create_customer(customer):
+    """
+    customer = { id, name }
+    """
     records = airtable_search(
         CUSTOMERS_TABLE_ID,
-        f"{{Trendyol Id}}='{c['id']}'"
+        f"{{Trendyol Id}}='{customer['id']}'"
     )
-    if records:
-        return records[0]["id"]
 
-    r = requests.post(
-        f"{AIRTABLE_URL}/{BASE_ID}/{CUSTOMERS_TABLE_ID}",
-        headers=AIRTABLE_HEADERS,
-        json={"fields": {"Name": c["name"], "Trendyol Id": c["id"]}},
-        timeout=REQUEST_TIMEOUT
+    # Exists → update name
+    if records:
+        record_id = records[0]["id"]
+        airtable_update(
+            CUSTOMERS_TABLE_ID,
+            record_id,
+            {"Name": customer["name"]}
+        )
+        return record_id
+
+    # New customer
+    res = airtable_create(
+        CUSTOMERS_TABLE_ID,
+        {
+            "Name": customer["name"],
+            "Trendyol Id": customer["id"],
+            "Acquired sales channel": "Trendyol"
+        }
     )
-    r.raise_for_status()
-    return r.json()["id"]
+    return res["id"]
 
 # ======================================================
-# DUPLICATE CHECK
+# ORDER HELPERS
 # ======================================================
 def order_line_exists(order_id, product_name):
     records = airtable_search(
@@ -124,35 +149,42 @@ def order_line_exists(order_id, product_name):
     )
     return bool(records)
 
-# ======================================================
-# CREATE ORDER LINE
-# ======================================================
-def create_order_line(order_id, order_number, customer_id, date, pay, ship, product, qty, price):
+def create_order_line(order, line, customer_record_id):
+    order_id = str(order["id"])
+
+    if order_line_exists(order_id, line["productName"]):
+        return
+
+    order_date = datetime.utcfromtimestamp(
+        order["orderDate"] / 1000
+    ).strftime("%Y-%m-%d")
+
     airtable_create(
         ORDERS_TABLE_ID,
         {
             "Order ID": order_id,
-            "Order Number": order_number,
-            "Customer": [customer_id],
-            "Order Date": date,
-            "Payment Status": pay,
-            "Shipping Status": ship,
-            "Sales Channel": "Trendyol",
-            "Trendyol Product Name": product,
-            "Quantity": str(qty),
-            "Item Value": str(price)
+            "Order Number": str(order["orderNumber"]),
+            "Customer": [customer_record_id],
+            "Order Date": order_date,
+            "Trendyol Product Name": line["productName"],
+            "Quantity": str(line.get("quantity", 1)),
+            "Item Value": str(line.get("price", "")),
+            "Payment Status": map_payment_status(order),
+            "Shipping Status": map_shipping_status(order),
+            "Sales Channel": "Trendyol"
         }
     )
 
+    print(f"✅ Order synced → {order_id} | {line['productName']}")
+
 # ======================================================
-# MAIN SYNC LOGIC
+# 🔥 MAIN UPDATE FUNCTION (WHAT YOU ASKED)
 # ======================================================
-def sync_trendyol_orders_job():
+def update_trendyol_to_airtable():
     if not sync_lock.acquire(blocking=False):
-        print("⏳ Sync already running — skipped")
         return
 
-    print("⏰ Trendyol sync started")
+    print("🔄 Updating Trendyol → Airtable")
 
     try:
         r = requests.get(
@@ -164,72 +196,34 @@ def sync_trendyol_orders_job():
         r.raise_for_status()
 
         orders = r.json().get("content", [])
+        print(f"📦 Orders fetched: {len(orders)}")
 
-        for o in orders:
-            order_id = str(o["id"])
-            order_number = str(o["orderNumber"])
-
-            customer_id = get_or_create_customer({
-                "id": str(o["customerId"]),
-                "name": f"{o.get('customerFirstName','')} {o.get('customerLastName','')}"
+        for order in orders:
+            customer_record_id = get_or_create_customer({
+                "id": str(order["customerId"]),
+                "name": f"{order.get('customerFirstName','')} {order.get('customerLastName','')}"
             })
 
-            order_date = datetime.utcfromtimestamp(
-                o["orderDate"] / 1000
-            ).strftime("%Y-%m-%d")
-
-            pay = map_payment_status(o)
-            ship = map_shipping_status(o)
-
-            for line in o.get("lines", []):
-                product = line.get("productName", "")
-                qty = line.get("quantity", 1)
-                price = line.get("price", "")
-
-                if order_line_exists(order_id, product):
-                    continue
-
-                create_order_line(
-                    order_id,
-                    order_number,
-                    customer_id,
-                    order_date,
-                    pay,
-                    ship,
-                    product,
-                    qty,
-                    price
-                )
-
-                print(f"✅ Synced {order_number} → {product}")
+            for line in order.get("lines", []):
+                create_order_line(order, line, customer_record_id)
 
     except Exception as e:
-        print("❌ Sync error:", e)
+        print("❌ Update error:", e)
 
     finally:
         sync_lock.release()
-        print("🎉 Trendyol sync finished")
+        print("🎉 Update finished")
 
 # ======================================================
-# CRON ENDPOINT
+# BROWSER TRIGGER
 # ======================================================
-@app.route("/trendyol/sync", methods=["GET", "POST", "HEAD"])
-def cron_sync():
-    if request.method == "HEAD":
-        return "", 200
-
-    received = (request.headers.get("X-Cron-Secret") or "").strip()
-    expected = (CRON_SECRET or "").strip()
-
-    if received != expected:
-        print("❌ Unauthorized cron request")
-        return "Unauthorized", 401
-
-    threading.Thread(target=sync_trendyol_orders_job).start()
-    return jsonify({"status": "sync started"}), 202
+@app.route("/update", methods=["GET"])
+def manual_update():
+    update_trendyol_to_airtable()
+    return jsonify({"status": "Trendyol orders synced to Airtable"}), 200
 
 # ======================================================
-# RUN
+# RUN (RENDER / LOCAL)
 # ======================================================
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000)

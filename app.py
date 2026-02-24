@@ -39,7 +39,6 @@ print("SELLER_ID:", bool(TRENDYOL_SELLER_ID))
 print("API_KEY:", bool(TRENDYOL_API_KEY))
 print("API_SECRET:", bool(TRENDYOL_API_SECRET))
 print("--------------------------------------------------")
-
 # ======================================================
 # HEADERS
 # ======================================================

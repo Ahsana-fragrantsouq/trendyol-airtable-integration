@@ -11,7 +11,7 @@ from flask import Flask, jsonify, request
 AIRTABLE_TOKEN = os.getenv("AIRTABLE_TOKEN")
 BASE_ID = os.getenv("BASE_ID")
 CUSTOMERS_TABLE_ID = os.getenv("CUSTOMERS_TABLE")
-ORDERS_TABLE_ID = os.getenv("ORDERS_TABLE")
+ORDER_LINE_ITEMS_TABLE_ID = os.getenv("ORDER_LINE_ITEMS_TABLE")
 FRENCH_INVENTORIES_TABLE_ID = os.getenv("FRENCH_INVENTORIES_TABLE")
 
 TRENDYOL_SELLER_ID = os.getenv("SELLER_ID")
@@ -34,7 +34,7 @@ print("🔐 ENV CHECK:")
 print("AIRTABLE_TOKEN:", bool(AIRTABLE_TOKEN))
 print("BASE_ID:", bool(BASE_ID))
 print("CUSTOMERS_TABLE:", bool(CUSTOMERS_TABLE_ID))
-print("ORDERS_TABLE:", bool(ORDERS_TABLE_ID))
+print("ORDER_LINE_ITEMS_TABLE:", bool(ORDER_LINE_ITEMS_TABLE_ID))
 print("SELLER_ID:", bool(TRENDYOL_SELLER_ID))
 print("API_KEY:", bool(TRENDYOL_API_KEY))
 print("API_SECRET:", bool(TRENDYOL_API_SECRET))
@@ -131,17 +131,17 @@ def get_or_create_customer(c):
 # ======================================================
 def order_line_exists(order_id, product_name):
     records = airtable_search(
-        ORDERS_TABLE_ID,
+        ORDER_LINE_ITEMS_TABLE_ID,
         f"AND({{Order ID}}='{order_id}', {{Trendyol Product Name}}='{product_name}')"
     )
     return bool(records)
 
 # ======================================================
-# CREATE ORDER LINE
+# CREATE ORDER LINE ITEM
 # ======================================================
 def create_order_line(order_id, order_number, customer_id, date, pay, ship, product, qty, price):
     airtable_create(
-        ORDERS_TABLE_ID,
+        ORDER_LINE_ITEMS_TABLE_ID,
         {
             "Order ID": order_id,
             "Order Number": order_number,
@@ -149,10 +149,10 @@ def create_order_line(order_id, order_number, customer_id, date, pay, ship, prod
             "Order Date": date,
             "Payment Status": pay,
             "Shipping Status": ship,
-            "Sales Channel": "Trendyol",
+            "Sales Channel (from Orders)": "Trendyol",
             "Trendyol Product Name": product,
-            "Quantity": str(qty),
-            "Item Value": str(price)
+            "Qty": str(qty),
+            "Rate": str(price)
         }
     )
 
@@ -224,7 +224,7 @@ def sync_trendyol_orders_job():
         print("🎉 Trendyol update finished")
 
 # ======================================================
-# BROWSER / AUTOMATION TRIGGER (UNCHANGED)
+# BROWSER / AUTOMATION TRIGGER
 # ======================================================
 @app.route("/update", methods=["GET"])
 def update_from_browser():
@@ -243,7 +243,7 @@ def update_from_browser():
     return jsonify({"status": "Trendyol sync started in background"}), 202
 
 # ======================================================
-# PING ENDPOINT (NEW – OPTION C)
+# PING ENDPOINT
 # ======================================================
 @app.route("/ping", methods=["GET"])
 def ping():

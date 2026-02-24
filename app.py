@@ -260,6 +260,10 @@ def ping():
 
     return jsonify({"status": "Ping OK – sync started"}), 200
 
+@app.route("/", methods=["GET"])
+def health():
+    return "OK", 200
+
 # ======================================================
 # RUN
 # ======================================================

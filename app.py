@@ -150,8 +150,8 @@ def create_order_line(order_id, order_number, customer_id, date, pay, ship, prod
             "Shipping Status": ship,
             "Sales Channel (from Orders)": "Trendyol",
             "Trendyol Product Name": product,
-            "Qty": str(qty),
-            "Rate": str(price)
+            "Qty": qty,
+            "Rate": price
         }
     )
 

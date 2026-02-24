@@ -39,6 +39,7 @@ print("SELLER_ID:", bool(TRENDYOL_SELLER_ID))
 print("API_KEY:", bool(TRENDYOL_API_KEY))
 print("API_SECRET:", bool(TRENDYOL_API_SECRET))
 print("--------------------------------------------------")
+
 # ======================================================
 # HEADERS
 # ======================================================
@@ -67,6 +68,7 @@ sync_lock = threading.Lock()
 # AIRTABLE HELPERS
 # ======================================================
 def airtable_search(table_id, formula):
+    print(f"🔍 Airtable search | table={table_id} | formula={formula}")
     r = requests.get(
         f"{AIRTABLE_URL}/{BASE_ID}/{table_id}",
         headers=AIRTABLE_HEADERS,
@@ -74,9 +76,13 @@ def airtable_search(table_id, formula):
         timeout=REQUEST_TIMEOUT
     )
     r.raise_for_status()
-    return r.json().get("records", [])
+    records = r.json().get("records", [])
+    print(f"🔍 Found {len(records)} records")
+    return records
 
 def airtable_create(table_id, fields):
+    print(f"📝 Creating Airtable record in table={table_id}")
+    print("🧾 Payload:", fields)
     r = requests.post(
         f"{AIRTABLE_URL}/{BASE_ID}/{table_id}",
         headers=AIRTABLE_HEADERS,
@@ -86,6 +92,7 @@ def airtable_create(table_id, fields):
     if r.status_code >= 400:
         print("❌ Airtable error:", r.text)
         r.raise_for_status()
+    print("✅ Airtable record created")
 
 # ======================================================
 # STATUS MAPPERS
@@ -109,13 +116,16 @@ def map_payment_status(order):
 # CUSTOMER
 # ======================================================
 def get_or_create_customer(c):
+    print(f"👤 Processing customer {c['id']} | {c['name']}")
     records = airtable_search(
         CUSTOMERS_TABLE_ID,
         f"{{Trendyol Id}}='{c['id']}'"
     )
     if records:
+        print("👤 Existing customer found")
         return records[0]["id"]
 
+    print("👤 Creating new customer")
     r = requests.post(
         f"{AIRTABLE_URL}/{BASE_ID}/{CUSTOMERS_TABLE_ID}",
         headers=AIRTABLE_HEADERS,
@@ -123,22 +133,28 @@ def get_or_create_customer(c):
         timeout=REQUEST_TIMEOUT
     )
     r.raise_for_status()
-    return r.json()["id"]
+    cid = r.json()["id"]
+    print("👤 Customer created:", cid)
+    return cid
 
 # ======================================================
 # DUPLICATE CHECK
 # ======================================================
 def order_line_exists(order_id, product_name):
+    print(f"🔁 Checking duplicate | Order={order_id} | Product={product_name}")
     records = airtable_search(
         ORDER_LINE_ITEMS_TABLE_ID,
         f"AND({{Order ID}}='{order_id}', {{Trendyol Product Name}}='{product_name}')"
     )
-    return bool(records)
+    exists = bool(records)
+    print("🔁 Exists:", exists)
+    return exists
 
 # ======================================================
 # CREATE ORDER LINE ITEM
 # ======================================================
 def create_order_line(order_id, order_number, customer_id, date, pay, ship, product, qty, price):
+    print(f"🛒 Creating line item | {order_number} | {product}")
     airtable_create(
         ORDER_LINE_ITEMS_TABLE_ID,
         {
@@ -178,6 +194,7 @@ def sync_trendyol_orders_job():
         print(f"📦 Orders fetched: {len(orders)}")
 
         for o in orders:
+            print(f"📦 Processing order {o['orderNumber']}")
             order_id = str(o["id"])
             order_number = str(o["orderNumber"])
 
@@ -199,6 +216,7 @@ def sync_trendyol_orders_job():
                 price = line.get("price", "")
 
                 if order_line_exists(order_id, product):
+                    print("⏭️ Skipped duplicate line item")
                     continue
 
                 create_order_line(
@@ -227,13 +245,17 @@ def sync_trendyol_orders_job():
 # ======================================================
 @app.route("/update", methods=["GET"])
 def update_from_browser():
+    print("🌐 /update called")
     secret = request.headers.get("X-Update-Secret")
     if secret != os.getenv("UPDATE_SECRET"):
+        print("⛔ Unauthorized /update")
         return jsonify({"error": "Unauthorized"}), 401
 
     if sync_lock.locked():
+        print("ℹ️ Sync already running")
         return jsonify({"status": "Sync already running"}), 200
 
+    print("🚀 Starting background sync thread")
     threading.Thread(
         target=sync_trendyol_orders_job,
         daemon=True
@@ -246,13 +268,17 @@ def update_from_browser():
 # ======================================================
 @app.route("/ping", methods=["GET"])
 def ping():
+    print("🏓 /ping called")
     secret = request.headers.get("X-Update-Secret")
     if secret != os.getenv("UPDATE_SECRET"):
+        print("⛔ Unauthorized /ping")
         return jsonify({"error": "Unauthorized"}), 401
 
     if sync_lock.locked():
+        print("ℹ️ Sync already running")
         return jsonify({"status": "Sync already running"}), 200
 
+    print("🚀 Starting background sync thread (ping)")
     threading.Thread(
         target=sync_trendyol_orders_job,
         daemon=True

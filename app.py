@@ -157,7 +157,7 @@ def create_order_line(order_id, order_number, customer_id, date, pay, ship, prod
     )
 
 # ======================================================
-# MAIN UPDATE LOGIC (REUSED)
+# MAIN UPDATE LOGIC
 # ======================================================
 def sync_trendyol_orders_job():
     if not sync_lock.acquire(blocking=False):
@@ -224,7 +224,7 @@ def sync_trendyol_orders_job():
         print("🎉 Trendyol update finished")
 
 # ======================================================
-# BROWSER TRIGGER
+# BROWSER / AUTOMATION TRIGGER (UNCHANGED)
 # ======================================================
 @app.route("/update", methods=["GET"])
 def update_from_browser():
@@ -243,7 +243,26 @@ def update_from_browser():
     return jsonify({"status": "Trendyol sync started in background"}), 202
 
 # ======================================================
-# RUN (RENDER / LOCAL)
+# PING ENDPOINT (NEW – OPTION C)
+# ======================================================
+@app.route("/ping", methods=["GET"])
+def ping():
+    secret = request.headers.get("X-Update-Secret")
+    if secret != os.getenv("UPDATE_SECRET"):
+        return jsonify({"error": "Unauthorized"}), 401
+
+    if sync_lock.locked():
+        return jsonify({"status": "Sync already running"}), 200
+
+    threading.Thread(
+        target=sync_trendyol_orders_job,
+        daemon=True
+    ).start()
+
+    return jsonify({"status": "Ping OK – sync started"}), 200
+
+# ======================================================
+# RUN
 # ======================================================
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000)

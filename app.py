@@ -268,23 +268,20 @@ def update_from_browser():
 # ======================================================
 @app.route("/ping", methods=["GET"])
 def ping():
-    print("🏓 /ping called")
-    secret = request.headers.get("X-Update-Secret")
-    if secret != os.getenv("UPDATE_SECRET"):
-        print("⛔ Unauthorized /ping")
-        return jsonify({"error": "Unauthorized"}), 401
+    print("🔥 Ping received – waking service")
 
     if sync_lock.locked():
-        print("ℹ️ Sync already running")
-        return jsonify({"status": "Sync already running"}), 200
+        return jsonify({"status": "Already running"}), 200
 
-    print("🚀 Starting background sync thread (ping)")
+    # Small internal delay handled by Render
+    time.sleep(5)
+
     threading.Thread(
         target=sync_trendyol_orders_job,
         daemon=True
     ).start()
 
-    return jsonify({"status": "Ping OK – sync started"}), 200
+    return jsonify({"status": "Sync started"}), 200
 
 @app.route("/", methods=["GET"])
 def health():

@@ -264,7 +264,7 @@ def update_from_browser():
     return jsonify({"status": "Trendyol sync started in background"}), 202
 
 # ======================================================
-# PING ENDPOINT
+# PING ENDPOINT (Legacy - keeps backward compatibility)
 # ======================================================
 @app.route("/ping", methods=["GET"])
 def ping():
@@ -286,6 +286,24 @@ def ping():
 
     return jsonify({"status": "Ping OK – sync started"}), 200
 
+# ======================================================
+# KEEPALIVE ENDPOINT (NEW - for keeping instance warm without syncing)
+# ======================================================
+@app.route("/keepalive", methods=["GET"])
+def keepalive():
+    print("💓 /keepalive called - keeping instance warm")
+    # Optional secret check if you want to secure it
+    secret = request.headers.get("X-Update-Secret")
+    if secret != os.getenv("UPDATE_SECRET"):
+        print("⛔ Unauthorized /keepalive")
+        return jsonify({"error": "Unauthorized"}), 401
+    
+    # Just return OK, no sync logic
+    return jsonify({"status": "Instance is warm"}), 200
+
+# ======================================================
+# HEALTH CHECK
+# ======================================================
 @app.route("/", methods=["GET"])
 def health():
     return "OK", 200

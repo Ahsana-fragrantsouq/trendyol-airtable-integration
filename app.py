@@ -241,47 +241,20 @@ def sync_trendyol_orders_job():
         print("🎉 Trendyol update finished")
 
 # ======================================================
-# BROWSER / AUTOMATION TRIGGER
-# ======================================================
-@app.route("/update", methods=["GET"])
-def update_from_browser():
-    print("🌐 /update called")
-    secret = request.headers.get("X-Update-Secret")
-    if secret != os.getenv("UPDATE_SECRET"):
-        print("⛔ Unauthorized /update")
-        return jsonify({"error": "Unauthorized"}), 401
-
-    if sync_lock.locked():
-        print("ℹ️ Sync already running")
-        return jsonify({"status": "Sync already running"}), 200
-
-    print("🚀 Starting background sync thread")
-    threading.Thread(
-        target=sync_trendyol_orders_job,
-        daemon=True
-    ).start()
-
-    return jsonify({"status": "Trendyol sync started in background"}), 202
-
-# ======================================================
-# PING ENDPOINT
+# PING ENDPOINT (FIXED)
 # ======================================================
 @app.route("/ping", methods=["GET"])
 def ping():
-    print("🔥 Ping received – waking service")
+    print("🔥 /ping called – starting sync NOW")
 
-    if sync_lock.locked():
-        return jsonify({"status": "Already running"}), 200
+    secret = request.headers.get("X-Update-Secret")
+    if secret != os.getenv("UPDATE_SECRET"):
+        print("⛔ Unauthorized ping")
+        return jsonify({"error": "Unauthorized"}), 401
 
-    # Small internal delay handled by Render
-    time.sleep(5)
+    sync_trendyol_orders_job()
 
-    threading.Thread(
-        target=sync_trendyol_orders_job,
-        daemon=True
-    ).start()
-
-    return jsonify({"status": "Sync started"}), 200
+    return jsonify({"status": "Sync completed"}), 200
 
 @app.route("/", methods=["GET"])
 def health():

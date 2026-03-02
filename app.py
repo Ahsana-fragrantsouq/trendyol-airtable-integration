@@ -250,23 +250,15 @@ def ping():
     received_secret = request.headers.get("X-Update-Secret")
     expected_secret = os.getenv("UPDATE_SECRET")
 
-    print("🔐 Received Secret:", received_secret)
-    print("🔐 Expected Secret:", expected_secret)
+    print("🔐 Received Secret RAW:", repr(received_secret))
+    print("🔐 Expected Secret RAW:", repr(expected_secret))
     print("🔐 Match:", received_secret == expected_secret)
 
-    if received_secret != expected_secret:
-        print("⛔ SECRET MISMATCH - returning 401")
-        return jsonify({
-            "error": "Unauthorized",
-            "received": received_secret,
-            "expected": expected_secret
-        }), 401
-
-    print("✅ Secret OK - starting sync")
-    sync_trendyol_orders_job()
-    print("🎉 Sync completed")
-
-    return jsonify({"status": "Sync completed"}), 200
+    return jsonify({
+        "received": received_secret,
+        "expected": expected_secret,
+        "match": received_secret == expected_secret
+    }), 200
 
 @app.route("/", methods=["GET"])
 def health():

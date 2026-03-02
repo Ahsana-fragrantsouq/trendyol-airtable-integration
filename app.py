@@ -250,9 +250,8 @@ def ping():
     received_secret = request.headers.get("X-Update-Secret")
     expected_secret = os.getenv("UPDATE_SECRET")
 
-    print("🔐 Received Secret RAW:", repr(received_secret))
-    print("🔐 Expected Secret RAW:", repr(expected_secret))
-    print("🔐 Match:", received_secret == expected_secret)
+    print("🔐 Received:", repr(received_secret))
+    print("🔐 Expected:", repr(expected_secret))
 
     if received_secret != expected_secret:
         print("⛔ Unauthorized")

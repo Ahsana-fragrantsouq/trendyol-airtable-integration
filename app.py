@@ -248,23 +248,20 @@ def ping():
     print("🔥 /ping endpoint HIT")
 
     received_secret = request.headers.get("X-Update-Secret")
-    expected_secret = os.getenv("UPDATE_SECRET")
-
-    print("🔐 Received:", repr(received_secret))
-    print("🔐 Expected:", repr(expected_secret))
-
-    if received_secret != expected_secret:
+    if received_secret != os.getenv("UPDATE_SECRET"):
         print("⛔ Unauthorized")
         return jsonify({"error": "Unauthorized"}), 401
 
-    print("🚀 Secret OK — starting sync")
+    print("⏳ Waiting 20 seconds to allow cold start...")
+    import time
+    time.sleep(20)
 
-    sync_trendyol_orders_job()
+    print("🚀 Starting sync thread")
 
-    print("🎉 Sync finished")
+    thread = threading.Thread(target=sync_trendyol_orders_job)
+    thread.start()
 
-    return jsonify({"status": "Sync completed"}), 200
-
+    return jsonify({"status": "Sync started"}), 200
 @app.route("/", methods=["GET"])
 def health():
     return "OK", 200

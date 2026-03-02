@@ -245,14 +245,26 @@ def sync_trendyol_orders_job():
 # ======================================================
 @app.route("/ping", methods=["GET"])
 def ping():
-    print("🔥 /ping called – starting sync NOW")
+    print("🔥 /ping endpoint HIT")
 
-    secret = request.headers.get("X-Update-Secret")
-    if secret != os.getenv("UPDATE_SECRET"):
-        print("⛔ Unauthorized ping")
-        return jsonify({"error": "Unauthorized"}), 401
+    received_secret = request.headers.get("X-Update-Secret")
+    expected_secret = os.getenv("UPDATE_SECRET")
 
+    print("🔐 Received Secret:", received_secret)
+    print("🔐 Expected Secret:", expected_secret)
+    print("🔐 Match:", received_secret == expected_secret)
+
+    if received_secret != expected_secret:
+        print("⛔ SECRET MISMATCH - returning 401")
+        return jsonify({
+            "error": "Unauthorized",
+            "received": received_secret,
+            "expected": expected_secret
+        }), 401
+
+    print("✅ Secret OK - starting sync")
     sync_trendyol_orders_job()
+    print("🎉 Sync completed")
 
     return jsonify({"status": "Sync completed"}), 200
 

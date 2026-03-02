@@ -252,11 +252,7 @@ def ping():
         print("⛔ Unauthorized")
         return jsonify({"error": "Unauthorized"}), 401
 
-    print("⏳ Waiting 20 seconds to allow cold start...")
-    import time
-    time.sleep(20)
-
-    print("🚀 Starting sync thread")
+    print("🚀 Starting background sync thread")
 
     thread = threading.Thread(target=sync_trendyol_orders_job)
     thread.start()

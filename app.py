@@ -254,11 +254,17 @@ def ping():
     print("🔐 Expected Secret RAW:", repr(expected_secret))
     print("🔐 Match:", received_secret == expected_secret)
 
-    return jsonify({
-        "received": received_secret,
-        "expected": expected_secret,
-        "match": received_secret == expected_secret
-    }), 200
+    if received_secret != expected_secret:
+        print("⛔ Unauthorized")
+        return jsonify({"error": "Unauthorized"}), 401
+
+    print("🚀 Secret OK — starting sync")
+
+    sync_trendyol_orders_job()
+
+    print("🎉 Sync finished")
+
+    return jsonify({"status": "Sync completed"}), 200
 
 @app.route("/", methods=["GET"])
 def health():

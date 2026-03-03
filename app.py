@@ -258,7 +258,7 @@ def ping():
     thread.start()
 
     return jsonify({"status": "Sync started"}), 200
-@app.route("/", methods=["GET"])
+@app.route("/", methods=["GET", "HEAD"])
 def health():
     return "OK", 200
 

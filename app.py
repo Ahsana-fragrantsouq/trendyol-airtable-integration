@@ -247,18 +247,24 @@ def sync_trendyol_orders_job():
 def ping():
     print("🔥 /ping endpoint HIT")
 
-    secret = request.headers.get("X-Update-Secret")
+    received_secret = request.headers.get("X-Update-Secret")
+    expected_secret = os.getenv("UPDATE_SECRET")
 
-    if secret != os.getenv("UPDATE_SECRET"):
-   
+    if received_secret != expected_secret:
         print("⛔ Unauthorized")
         return jsonify({"error": "Unauthorized"}), 401
 
-    print("🚀 Starting background sync thread")
+    print("🚀 Starting background sync")
 
+    # Run job in background
     thread = threading.Thread(target=sync_trendyol_orders_job)
+    thread.daemon = True
     thread.start()
-    return jsonify({"status": "Sync started"}), 200
+
+    # Respond immediately
+    return jsonify({
+        "status": "Sync started in background"
+    }), 200
 
 
 @app.route("/", methods=["GET", "HEAD"])

@@ -1,6 +1,7 @@
 import os
 import base64
 import requests
+requests.adapters.DEFAULT_RETRIES = 3
 import threading
 from datetime import datetime
 from flask import Flask, jsonify, request

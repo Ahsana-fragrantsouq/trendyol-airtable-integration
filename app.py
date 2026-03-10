@@ -267,6 +267,11 @@ def ping():
         "status": "Sync started in background"
     }), 200
 
+@app.route("/wake", methods=["GET"])
+def wake():
+    print("🌅 Server woken up")
+    return "awake", 200
+
 
 @app.route("/", methods=["GET", "HEAD"])
 def health():

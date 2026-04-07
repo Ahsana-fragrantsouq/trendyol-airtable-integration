@@ -118,10 +118,12 @@ def airtable_update(table_id, record_id, fields):
 # ======================================================
 def map_shipping_status(order):
     s = order.get("status", "").lower()
-    if s in ["shipped", "delivered", "invoiced"]:
-        return "Shipped"
+    if s == "delivered":
+        return "Delivered"
+    if s in ["shipped", "invoiced", "in_transit"]:
+        return "In Transit"
     if s == "cancelled":
-        return "Cancelled"   # ← NEW: cancelled orders now reflected
+        return "Cancelled"
     return "New"
 
 def map_payment_status(order):

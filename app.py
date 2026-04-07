@@ -96,12 +96,33 @@ def airtable_create(table_id, fields):
     print("✅ Airtable record created")
 
 # ======================================================
+# NEW: AIRTABLE UPDATE HELPER
+# ======================================================
+def airtable_update(table_id, record_id, fields):
+    """PATCH an existing Airtable record with new field values."""
+    print(f"✏️ Updating Airtable record {record_id} in table={table_id}")
+    print("🧾 Update payload:", fields)
+    r = requests.patch(
+        f"{AIRTABLE_URL}/{BASE_ID}/{table_id}/{record_id}",
+        headers=AIRTABLE_HEADERS,
+        json={"fields": fields},
+        timeout=REQUEST_TIMEOUT
+    )
+    if r.status_code >= 400:
+        print("❌ Airtable update error:", r.text)
+        r.raise_for_status()
+    print("✅ Airtable record updated")
+
+# ======================================================
 # STATUS MAPPERS
 # ======================================================
 def map_shipping_status(order):
-    return "Shipped" if order.get("status", "").lower() in [
-        "shipped", "delivered", "invoiced"
-    ] else "New"
+    s = order.get("status", "").lower()
+    if s in ["shipped", "delivered", "invoiced"]:
+        return "Shipped"
+    if s == "cancelled":
+        return "Cancelled"   # ← NEW: cancelled orders now reflected
+    return "New"
 
 def map_payment_status(order):
     s = order.get("status", "").lower()
@@ -139,17 +160,26 @@ def get_or_create_customer(c):
     return cid
 
 # ======================================================
-# DUPLICATE CHECK
+# DUPLICATE CHECK — NOW RETURNS RECORD ID OR None
 # ======================================================
-def order_line_exists(order_id, product_name):
-    print(f"🔁 Checking duplicate | Order={order_id} | Product={product_name}")
+def get_existing_order_line(order_id, product_name):
+    """
+    Returns the Airtable record ID if the line item already exists,
+    or None if it doesn't.
+    Previously this just returned True/False — now it returns the ID
+    so we can update the record instead of skipping it.
+    """
+    print(f"🔁 Checking existing line | Order={order_id} | Product={product_name}")
     records = airtable_search(
         ORDER_LINE_ITEMS_TABLE_ID,
         f"AND({{Order ID}}='{order_id}', {{Trendyol Product Name}}='{product_name}')"
     )
-    exists = bool(records)
-    print("🔁 Exists:", exists)
-    return exists
+    if records:
+        record_id = records[0]["id"]
+        print(f"🔁 Found existing record: {record_id}")
+        return record_id
+    print("🔁 No existing record found")
+    return None
 
 # ======================================================
 # CREATE ORDER LINE ITEM
@@ -169,6 +199,26 @@ def create_order_line(order_id, order_number, customer_id, date, pay, ship, prod
             "Trendyol Product Name": product,
             "Qty": qty,
             "Rate": price
+        }
+    )
+
+# ======================================================
+# NEW: UPDATE ORDER LINE ITEM STATUSES
+# ======================================================
+def update_order_line_statuses(record_id, pay, ship):
+    """
+    Updates only the Payment Status and Shipping Status fields
+    on an existing Airtable line item record.
+    Called when a record already exists but its status may have changed
+    on Trendyol (e.g. New → Shipped, or Pending → Cancelled).
+    """
+    print(f"🔄 Updating statuses for record {record_id} | Pay={pay} | Ship={ship}")
+    airtable_update(
+        ORDER_LINE_ITEMS_TABLE_ID,
+        record_id,
+        {
+            "Payment Status": pay,
+            "Shipping Status": ship
         }
     )
 
@@ -216,23 +266,27 @@ def sync_trendyol_orders_job():
                 qty = line.get("quantity", 1)
                 price = line.get("price", "")
 
-                if order_line_exists(order_id, product):
-                    print("⏭️ Skipped duplicate line item")
-                    continue
+                # ── CHANGED: instead of skipping duplicates, update them ──
+                existing_record_id = get_existing_order_line(order_id, product)
 
-                create_order_line(
-                    order_id,
-                    order_number,
-                    customer_id,
-                    order_date,
-                    pay,
-                    ship,
-                    product,
-                    qty,
-                    price
-                )
-
-                print(f"✅ Synced {order_number} → {product}")
+                if existing_record_id:
+                    # Record exists → update its statuses to reflect Trendyol's latest state
+                    update_order_line_statuses(existing_record_id, pay, ship)
+                    print(f"🔄 Updated statuses for {order_number} → {product}")
+                else:
+                    # New record → create it
+                    create_order_line(
+                        order_id,
+                        order_number,
+                        customer_id,
+                        order_date,
+                        pay,
+                        ship,
+                        product,
+                        qty,
+                        price
+                    )
+                    print(f"✅ Synced {order_number} → {product}")
 
     except Exception as e:
         print("❌ Update error:", e)
@@ -242,7 +296,7 @@ def sync_trendyol_orders_job():
         print("🎉 Trendyol update finished")
 
 # ======================================================
-# PING ENDPOINT (FIXED)
+# PING ENDPOINT
 # ======================================================
 @app.route("/ping", methods=["GET"])
 def ping():
@@ -257,12 +311,10 @@ def ping():
 
     print("🚀 Starting background sync")
 
-    # Run job in background
     thread = threading.Thread(target=sync_trendyol_orders_job)
     thread.daemon = True
     thread.start()
 
-    # Respond immediately
     return jsonify({
         "status": "Sync started in background"
     }), 200
@@ -271,7 +323,6 @@ def ping():
 def wake():
     print("🌅 Server woken up")
     return "awake", 200
-
 
 @app.route("/", methods=["GET", "HEAD"])
 def health():

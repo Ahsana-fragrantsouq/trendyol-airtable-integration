@@ -55,7 +55,7 @@ basic_token = base64.b64encode(
 
 TRENDYOL_HEADERS = {
     "Authorization": f"Basic {basic_token}",
-    "User-Agent": "TrendyolAirtableSync/1.0",
+    "User-Agent": f"{TRENDYOL_SELLER_ID} - Self Integration",
     "Content-Type": "application/json",
     "storeFrontCode": "AE"
 }

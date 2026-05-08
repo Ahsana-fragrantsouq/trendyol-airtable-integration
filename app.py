@@ -134,7 +134,7 @@ def map_payment_status(order):
     if s == "cancelled":
         return "Failed"
     if s == "refunded":
-        return "Refund"
+        return "Refunded"
     return "Pending"
 
 # ======================================================

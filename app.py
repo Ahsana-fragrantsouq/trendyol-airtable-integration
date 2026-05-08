@@ -11,10 +11,10 @@ from flask import Flask, jsonify, request
 # ======================================================
 AIRTABLE_TOKEN = os.getenv("AIRTABLE_TOKEN")
 BASE_ID = os.getenv("BASE_ID")
-CUSTOMERS_TABLE_ID = os.getenv("CUSTOMERS_TABLE")
-ORDERS_TABLE_ID = os.getenv("ORDERS_TABLE")              # NEW: add this env var
-ORDER_LINE_ITEMS_TABLE_ID = os.getenv("ORDER_LINE_ITEMS_TABLE")
-FRENCH_INVENTORIES_TABLE_ID = os.getenv("FRENCH_INVENTORIES_TABLE")
+CUSTOMERS_TABLE_ID = os.getenv("CUSTOMERS_TABLE_ID")
+ORDERS_TABLE_ID = os.getenv("ORDERS_TABLE_ID")
+ORDER_LINE_ITEMS_TABLE_ID = os.getenv("ORDER_LINE_ITEMS_TABLE_ID")
+FRENCH_INVENTORIES_TABLE_ID = os.getenv("FRENCH_INVENTORIES_TABLE_ID")
 
 TRENDYOL_SELLER_ID = os.getenv("SELLER_ID")
 TRENDYOL_API_KEY = os.getenv("API_KEY")
@@ -220,7 +220,6 @@ def get_or_create_order(order_id, order_number, customer_id, order_date, pay, sh
         ORDERS_TABLE_ID,
         {
             "Order ID": order_id,
-            "Order Number": order_number,
             "Customer": [customer_id],
             "Order Date": order_date,
             "Sales Channel": "Trendyol",
@@ -282,7 +281,9 @@ def create_order_line(
         # Linked record fields
         "Customer": [customer_id],
         "Order": [order_record_id],
-         "Tax Type": "5%",
+
+        # TODO: Set Tax Type once business rule is confirmed
+        # "Tax Type": "5%",
     }
 
     # Only link Product if we found a matching SKU in French Inventories

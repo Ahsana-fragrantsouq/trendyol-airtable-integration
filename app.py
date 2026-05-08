@@ -11,10 +11,10 @@ from flask import Flask, jsonify, request
 # ======================================================
 AIRTABLE_TOKEN = os.getenv("AIRTABLE_TOKEN")
 BASE_ID = os.getenv("BASE_ID")
-CUSTOMERS_TABLE_ID = os.getenv("CUSTOMERS_TABLE_ID")
-ORDERS_TABLE_ID = os.getenv("ORDERS_TABLE_ID")
-ORDER_LINE_ITEMS_TABLE_ID = os.getenv("ORDER_LINE_ITEMS_TABLE_ID")
-FRENCH_INVENTORIES_TABLE_ID = os.getenv("FRENCH_INVENTORIES_TABLE_ID")
+CUSTOMERS_TABLE_ID = os.getenv("CUSTOMERS_TABLE")
+ORDERS_TABLE_ID = os.getenv("ORDERS_TABLE")
+ORDER_LINE_ITEMS_TABLE_ID = os.getenv("ORDER_LINE_ITEMS_TABLE")
+FRENCH_INVENTORIES_TABLE_ID = os.getenv("FRENCH_INVENTORIES_TABLE")
 
 TRENDYOL_SELLER_ID = os.getenv("SELLER_ID")
 TRENDYOL_API_KEY = os.getenv("API_KEY")

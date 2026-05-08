@@ -55,6 +55,7 @@ basic_token = base64.b64encode(
 
 TRENDYOL_HEADERS = {
     "Authorization": f"Basic {basic_token}",
+    # 403 error correction (mail)
     "User-Agent": f"{TRENDYOL_SELLER_ID} - Self Integration",
     "Content-Type": "application/json",
     "storeFrontCode": "AE"

@@ -12,6 +12,7 @@ from flask import Flask, jsonify, request
 AIRTABLE_TOKEN = os.getenv("AIRTABLE_TOKEN")
 BASE_ID = os.getenv("BASE_ID")
 CUSTOMERS_TABLE_ID = os.getenv("CUSTOMERS_TABLE")
+ORDERS_TABLE_ID = os.getenv("ORDERS_TABLE")              # NEW: add this env var
 ORDER_LINE_ITEMS_TABLE_ID = os.getenv("ORDER_LINE_ITEMS_TABLE")
 FRENCH_INVENTORIES_TABLE_ID = os.getenv("FRENCH_INVENTORIES_TABLE")
 
@@ -35,7 +36,9 @@ print("🔐 ENV CHECK:")
 print("AIRTABLE_TOKEN:", bool(AIRTABLE_TOKEN))
 print("BASE_ID:", bool(BASE_ID))
 print("CUSTOMERS_TABLE:", bool(CUSTOMERS_TABLE_ID))
+print("ORDERS_TABLE:", bool(ORDERS_TABLE_ID))
 print("ORDER_LINE_ITEMS_TABLE:", bool(ORDER_LINE_ITEMS_TABLE_ID))
+print("FRENCH_INVENTORIES_TABLE:", bool(FRENCH_INVENTORIES_TABLE_ID))
 print("SELLER_ID:", bool(TRENDYOL_SELLER_ID))
 print("API_KEY:", bool(TRENDYOL_API_KEY))
 print("API_SECRET:", bool(TRENDYOL_API_SECRET))
@@ -55,7 +58,6 @@ basic_token = base64.b64encode(
 
 TRENDYOL_HEADERS = {
     "Authorization": f"Basic {basic_token}",
-    # 403 error correction (mail)
     "User-Agent": f"{TRENDYOL_SELLER_ID} - Self Integration",
     "Content-Type": "application/json",
     "storeFrontCode": "AE"
@@ -94,13 +96,11 @@ def airtable_create(table_id, fields):
     if r.status_code >= 400:
         print("❌ Airtable error:", r.text)
         r.raise_for_status()
-    print("✅ Airtable record created")
+    record = r.json()
+    print("✅ Airtable record created:", record["id"])
+    return record["id"]
 
-# ======================================================
-# NEW: AIRTABLE UPDATE HELPER
-# ======================================================
 def airtable_update(table_id, record_id, fields):
-    """PATCH an existing Airtable record with new field values."""
     print(f"✏️ Updating Airtable record {record_id} in table={table_id}")
     print("🧾 Update payload:", fields)
     r = requests.patch(
@@ -151,26 +151,93 @@ def get_or_create_customer(c):
         return records[0]["id"]
 
     print("👤 Creating new customer")
-    r = requests.post(
-        f"{AIRTABLE_URL}/{BASE_ID}/{CUSTOMERS_TABLE_ID}",
-        headers=AIRTABLE_HEADERS,
-        json={"fields": {"Name": c["name"], "Trendyol Id": c["id"]}},
-        timeout=REQUEST_TIMEOUT
+    record_id = airtable_create(
+        CUSTOMERS_TABLE_ID,
+        {
+            "Customer Name": c["name"],
+            "Trendyol Id": c["id"]
+        }
     )
-    r.raise_for_status()
-    cid = r.json()["id"]
-    print("👤 Customer created:", cid)
-    return cid
+    print("👤 Customer created:", record_id)
+    return record_id
 
 # ======================================================
-# DUPLICATE CHECK — NOW RETURNS RECORD ID OR None
+# NEW: FRENCH INVENTORIES — FIND PRODUCT BY SKU
+# ======================================================
+def get_french_inventory_record_id(merchant_sku):
+    """
+    Looks up a record in the French Inventories table by the SKU field.
+    The merchant_sku comes from the Trendyol line item's merchantSku field.
+    Returns the Airtable record ID if found, or None if not found.
+    """
+    if not merchant_sku:
+        print("⚠️ No merchantSku provided — skipping product lookup")
+        return None
+
+    print(f"🔎 Looking up French Inventories | SKU={merchant_sku}")
+    records = airtable_search(
+        FRENCH_INVENTORIES_TABLE_ID,
+        f"{{SKU}}='{merchant_sku}'"
+    )
+    if records:
+        record_id = records[0]["id"]
+        print(f"✅ Found French Inventory record: {record_id}")
+        return record_id
+
+    print(f"⚠️ No French Inventory record found for SKU={merchant_sku}")
+    return None
+
+# ======================================================
+# NEW: ORDERS TABLE — GET OR CREATE ORDER
+# ======================================================
+def get_or_create_order(order_id, order_number, customer_id, order_date, pay, ship):
+    """
+    Checks if an order already exists in the Orders table by Order ID.
+    - If it exists: updates Payment Status and Shipping Status, returns record ID.
+    - If not: creates a new record and returns the new record ID.
+    """
+    print(f"📋 Processing Orders table | Order ID={order_id}")
+    records = airtable_search(
+        ORDERS_TABLE_ID,
+        f"{{Order ID}}='{order_id}'"
+    )
+
+    if records:
+        existing_id = records[0]["id"]
+        print(f"📋 Existing order found: {existing_id} — updating statuses")
+        airtable_update(
+            ORDERS_TABLE_ID,
+            existing_id,
+            {
+                "Payment Status": pay,
+                "Shipping Status": ship
+            }
+        )
+        return existing_id
+
+    print(f"📋 Creating new order in Orders table")
+    new_id = airtable_create(
+        ORDERS_TABLE_ID,
+        {
+            "Order ID": order_id,
+            "Order Number": order_number,
+            "Customer": [customer_id],
+            "Order Date": order_date,
+            "Sales Channel": "Trendyol",
+            "Payment Status": pay,
+            "Shipping Status": ship
+        }
+    )
+    print(f"📋 Order created: {new_id}")
+    return new_id
+
+# ======================================================
+# ORDER LINE ITEMS — DUPLICATE CHECK
 # ======================================================
 def get_existing_order_line(order_id, product_name):
     """
-    Returns the Airtable record ID if the line item already exists,
-    or None if it doesn't.
-    Previously this just returned True/False — now it returns the ID
-    so we can update the record instead of skipping it.
+    Returns the Airtable record ID if the line item already exists, or None.
+    Matches by Order ID text field and Trendyol Product Name.
     """
     print(f"🔁 Checking existing line | Order={order_id} | Product={product_name}")
     records = airtable_search(
@@ -185,35 +252,51 @@ def get_existing_order_line(order_id, product_name):
     return None
 
 # ======================================================
-# CREATE ORDER LINE ITEM
+# ORDER LINE ITEMS — CREATE
 # ======================================================
-def create_order_line(order_id, order_number, customer_id, date, pay, ship, product, qty, price):
+def create_order_line(
+    order_id, order_number, order_record_id,
+    customer_id, date, pay, ship,
+    product, qty, price,
+    french_inventory_record_id
+):
+    """
+    Creates a new Order Line Item record.
+    - order_record_id: Airtable record ID from the Orders table (linked field)
+    - french_inventory_record_id: Airtable record ID from French Inventories (linked field), can be None
+    """
     print(f"🛒 Creating line item | {order_number} | {product}")
-    airtable_create(
-        ORDER_LINE_ITEMS_TABLE_ID,
-        {
-            "Order ID": order_id,
-            "Order Number": order_number,
-            "Customer": [customer_id],
-            "Order Date": date,
-            "Payment Status": pay,
-            "Shipping Status": ship,
-            "Sales Channel": "Trendyol",
-            "Trendyol Product Name": product,
-            "Qty": qty,
-            "Rate": price
-        }
-    )
+
+    fields = {
+        # Text/plain fields
+        "Order ID": order_id,
+        "Order Number": order_number,
+        "Order Date": date,
+        "Rate": price,
+        "Qty": qty,
+        "Trendyol Product Name": product,
+        "Sales Channel": "Trendyol",
+        "Payment Status": pay,
+        "Shipping Status": ship,
+
+        # Linked record fields
+        "Customer": [customer_id],
+        "Order": [order_record_id],
+         "Tax Type": "5%",
+    }
+
+    # Only link Product if we found a matching SKU in French Inventories
+    if french_inventory_record_id:
+        fields["Product"] = [french_inventory_record_id]
+
+    airtable_create(ORDER_LINE_ITEMS_TABLE_ID, fields)
 
 # ======================================================
-# NEW: UPDATE ORDER LINE ITEM STATUSES
+# ORDER LINE ITEMS — UPDATE STATUSES
 # ======================================================
 def update_order_line_statuses(record_id, pay, ship):
     """
-    Updates only the Payment Status and Shipping Status fields
-    on an existing Airtable line item record.
-    Called when a record already exists but its status may have changed
-    on Trendyol (e.g. New → Shipped, or Pending → Cancelled).
+    Updates only Payment Status and Shipping Status on an existing line item.
     """
     print(f"🔄 Updating statuses for record {record_id} | Pay={pay} | Ship={ship}")
     airtable_update(
@@ -226,14 +309,14 @@ def update_order_line_statuses(record_id, pay, ship):
     )
 
 # ======================================================
-# MAIN UPDATE LOGIC
+# MAIN SYNC LOGIC
 # ======================================================
 def sync_trendyol_orders_job():
     if not sync_lock.acquire(blocking=False):
         print("⏳ Sync already running — skipped")
         return
 
-    print("⏰ Trendyol update started")
+    print("⏰ Trendyol sync started")
 
     try:
         r = requests.get(
@@ -248,58 +331,68 @@ def sync_trendyol_orders_job():
         print(f"📦 Orders fetched: {len(orders)}")
 
         for o in orders:
+            print(f"\n{'='*50}")
             print(f"📦 Processing order {o['orderNumber']}")
-            order_id = str(o["id"])
-            order_number = str(o["orderNumber"])
 
-            customer_id = get_or_create_customer({
-                "id": str(o["customerId"]),
-                "name": f"{o.get('customerFirstName','')} {o.get('customerLastName','')}"
-            })
+            order_id     = str(o["id"])
+            order_number = str(o["orderNumber"])
 
             order_date = datetime.utcfromtimestamp(
                 o["orderDate"] / 1000
             ).strftime("%Y-%m-%d")
 
-            pay = map_payment_status(o)
+            pay  = map_payment_status(o)
             ship = map_shipping_status(o)
 
-            for line in o.get("lines", []):
-                product = line.get("productName", "")
-                qty = line.get("quantity", 1)
-                price = line.get("price", "")
+            # ── STEP 1: Get or create Customer ──────────────────
+            customer_id = get_or_create_customer({
+                "id":   str(o["customerId"]),
+                "name": f"{o.get('customerFirstName', '')} {o.get('customerLastName', '')}".strip()
+            })
 
-                # ── CHANGED: instead of skipping duplicates, update them ──
+            # ── STEP 2: Get or create/update Order in Orders table ──
+            order_record_id = get_or_create_order(
+                order_id, order_number,
+                customer_id, order_date,
+                pay, ship
+            )
+
+            # ── STEP 3: Process each line item ──────────────────
+            for line in o.get("lines", []):
+                product     = line.get("productName", "")
+                qty         = line.get("quantity", 1)
+                price       = line.get("price", 0)
+                merchant_sku = line.get("merchantSku", "")   # used for French Inventories lookup
+
+                # Find matching product in French Inventories by SKU
+                french_inventory_record_id = get_french_inventory_record_id(merchant_sku)
+
+                # Check if this line item already exists
                 existing_record_id = get_existing_order_line(order_id, product)
 
                 if existing_record_id:
-                    # Record exists → update its statuses to reflect Trendyol's latest state
+                    # Record exists → update statuses only
                     update_order_line_statuses(existing_record_id, pay, ship)
                     print(f"🔄 Updated statuses for {order_number} → {product}")
                 else:
                     # New record → create it
                     create_order_line(
-                        order_id,
-                        order_number,
-                        customer_id,
-                        order_date,
-                        pay,
-                        ship,
-                        product,
-                        qty,
-                        price
+                        order_id, order_number, order_record_id,
+                        customer_id, order_date, pay, ship,
+                        product, qty, price,
+                        french_inventory_record_id
                     )
-                    print(f"✅ Synced {order_number} → {product}")
+                    print(f"✅ Created line item for {order_number} → {product}")
 
     except Exception as e:
-        print("❌ Update error:", e)
+        print("❌ Sync error:", e)
 
     finally:
         sync_lock.release()
-        print("🎉 Trendyol update finished")
+        print("🎉 Trendyol sync finished")
 
 # ======================================================
-# PING ENDPOINT
+# ENDPOINTS
 # ======================================================
 @app.route("/ping", methods=["GET"])
 def ping():
@@ -313,14 +406,11 @@ def ping():
         return jsonify({"error": "Unauthorized"}), 401
 
     print("🚀 Starting background sync")
-
     thread = threading.Thread(target=sync_trendyol_orders_job)
     thread.daemon = True
     thread.start()
 
-    return jsonify({
-        "status": "Sync started in background"
-    }), 200
+    return jsonify({"status": "Sync started in background"}), 200
 
 @app.route("/wake", methods=["GET"])
 def wake():
